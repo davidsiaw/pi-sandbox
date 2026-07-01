@@ -38,9 +38,15 @@ crun tools. This keeps absolute paths in output/errors meaningful on the host.
 
 ### What is deliberately *not* mounted
 
-- `~/.pi/firecrawl-key.env`, `~/.pi/redash/` — other tool credentials stay on
-  the host, out of the sandbox.
+- other `~/.pi/` extension state (files an extension keeps outside
+  `~/.pi/agent`) — stays on the host, out of the sandbox. Tools that only read
+  such files (rather than an env var) won't work in the sandbox unless you add
+  a mount for them.
 - `~/.pi/agent/sessions`, `bin`, `npm` — sandbox-local, ephemeral, auto-cleaned.
+
+Env-based secrets (any tool that reads an env var) are *forwarded* rather than
+mounted — see [Forwarding secrets / env vars](#forwarding-secrets--env-vars)
+below.
 
 ## Environment toggles
 
@@ -89,6 +95,48 @@ accumulates.
 Even when a host `SYSTEM.md` *replaces* the base prompt, pi still appends
 `APPEND_SYSTEM.md` afterward — so the container guidance lands either way. No
 shell interpolation of prompt text is involved; pi loads the files natively.
+
+## Forwarding secrets / env vars
+
+Some pi extensions read secrets from environment variables (e.g. an extension
+might use `MY_ENV_VAR`). Rather than mounting secret files into the sandbox,
+`pa` forwards env vars at launch. Two sources, applied in order:
+
+### 1. `~/.pi/agent/pa.env` — plain values
+
+One `KEY=value` per line (`#` comments and blank lines ignored). Each is passed
+as `-e KEY=value`:
+
+```
+MY_ENV_VAR=some-value
+MY_OTHER_KEY=whatever
+```
+
+Simple, but the secret sits in a plaintext file — fine for low-value keys.
+
+### 2. `~/.pi/agent/pa.openv` — live 1Password lookups (preferred for secrets)
+
+Borrowed from the crun `openv` pattern. One line per var:
+
+```
+ENVNAME=item:field
+ENVNAME=item:field:vault
+```
+
+For each line `pa` runs `op item get --reveal <item> --fields label=<field>`
+(adding `--vault <vault>` when given) and forwards the result as `-e`. The
+secret is pulled **live at launch** and never stored on disk. Requires the
+1Password CLI (`op`) to be installed and signed in; lines are skipped with a
+warning if resolution fails. Example:
+
+```
+MY_ENV_VAR=my-1password-item:credential
+MY_OTHER_KEY=another-item:password:Work
+```
+
+Both are additive; the openv source overrides `pa.env` for the same var (Docker
+keeps the last `-e`). Neither mounts a secret file into the container, and no
+secret is baked into the image.
 
 ## Credentials: the `auth.json` trade-off
 
