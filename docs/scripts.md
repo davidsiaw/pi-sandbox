@@ -1,0 +1,141 @@
+# Scripts reference
+
+The `Dockerfile`, `build.sh`, `smoketest.sh`, and the files in `scripts/` are
+kept comment-free. This page is their documentation: what each does, why, and
+the non-obvious details.
+
+## Dockerfile
+
+`# syntax=docker/dockerfile:1` is a parser directive, not a comment — leave it.
+
+Multipurpose sandbox for running the pi coding agent in a throwaway container.
+mise manages Ruby/Node/Python at any version, installed on demand; compiled
+runtimes are cached in a named volume by the launcher. Arbitrary-uid design:
+nothing is baked to a specific user, everything installed is root-owned and
+read-only, and only HOME, the mounted project, and the mise cache volume are
+writable. Build once, push, run anywhere:
+
+```bash
+docker build -t davidsiaw/pi-sandbox:latest .
+```
+
+Build stages, in order:
+
+1. **System packages** (`install-system-deps.sh`) — build/runtime libraries.
+2. **Fixed system Node + pi** (`install-node-system.sh`, `install-pi.sh`) —
+   `ARG PI_NODE_MAJOR=22`. pi runs on this Node forever, independent of any Node
+   a project later selects through mise.
+3. **Playwright + Chromium** (`install-browser.sh`) — `ENV
+   PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`.
+4. **mise** (`install-mise.sh`) — system-wide, root-owned. Key env set here:
+   - `HOME=/home/agent`
+   - `MISE_DATA_DIR=/home/agent/.local/share/mise`
+   - `PATH=.../mise/shims:/usr/local/bin:$PATH` — shims on PATH so runtimes work
+     in non-interactive `docker run` calls.
+   - `MISE_NOT_FOUND_AUTO_INSTALL=false` — do NOT silently compile a missing
+     runtime when a shim is called; the agent installs versions explicitly.
+5. **Writable HOME + passwd/shadow appendable** (`setup-home.sh`).
+6. **Baked guidance + merge** (`APPEND_SYSTEM.base.md`,
+   `merge-append-system.sh`). The launcher stages any host `APPEND_SYSTEM.md` at
+   `/opt/pa/APPEND_SYSTEM.host.md`; the merge script combines host (first) +
+   base (second) into the `APPEND_SYSTEM.md` slot pi loads natively.
+7. **Entrypoint** (`entrypoint.sh`). `CMD ["bash", "-l"]` is a login shell so
+   `/etc/profile.d/mise.sh` (mise activation) is sourced.
+
+See [architecture.md](architecture.md) for the full rationale of each stage.
+
+## scripts/install-system-deps.sh (root)
+
+OS packages needed to run mise (`curl`, `ca-certificates`, `git`), compile Ruby
+and Python from source (`build-essential`, `libssl-dev`, `libreadline-dev`,
+`zlib1g-dev`, `libyaml-dev`, `libffi-dev`, and friends), and build native gems /
+pip wheels. `sudo` is installed here; the grant is configured in
+`setup-home.sh`.
+
+## scripts/install-node-system.sh (root)
+
+Installs a fixed system Node via NodeSource (Debian's own is too old for pi).
+Kept separate from mise so that when a project switches Node through mise, pi's
+runtime is untouched. Honors `PI_NODE_MAJOR` (default 22).
+
+## scripts/install-pi.sh (root)
+
+`npm install -g @earendil-works/pi-coding-agent` on the fixed system Node, so pi
+keeps working even when a project switches Node via mise and even when the mise
+data dir is replaced by a mounted cache volume at runtime.
+
+## scripts/install-browser.sh (root)
+
+Installs the Playwright CLI globally (pinned so browser + CLI versions stay in
+lockstep) and Chromium plus OS deps via `playwright install --with-deps
+chromium`. Browsers go to a shared, world-readable path (`chmod -R a+rX`) so
+they survive the mise data-dir volume overlay, are usable by any uid, and aren't
+re-downloaded per container.
+
+## scripts/install-mise.sh (root)
+
+Installs the mise binary to `/usr/local/bin/mise` (root-owned, read-only). No
+language runtimes are baked — installed on demand and cached in the mounted
+volume. Writes `/etc/profile.d/mise.sh` so every login shell activates mise and
+puts the shims on PATH; data/cache/config dirs are pointed at writable locations
+via env in the Dockerfile.
+
+## scripts/setup-home.sh (root)
+
+Prepares the arbitrary-uid model. Makes `HOME`, `~/.pi`, `~/.local` (mise data),
+`~/.cache` (mise lockfiles), and `~/.config` world-writable (`0777`) so any uid
+can populate them — including a fresh named cache volume, which inherits the
+image dir's perms.
+
+Makes `/etc/passwd` and `/etc/shadow` world-writable (`0666`) so the entrypoint
+can append entries for the runtime uid. Both are needed: sudo's PAM validates
+the account against `/etc/shadow`, and without a shadow entry sudo fails with
+"account validation failure".
+
+Grants passwordless sudo to **all** users (`ALL ALL=(ALL) NOPASSWD:ALL` in
+`/etc/sudoers.d/nopasswd-all`). The container runs as an arbitrary uid, so a
+specific user can't be named. This lets the agent `apt install` extra
+tools/libraries during a task; changes are ephemeral. A deliberate isolation
+trade-off for a disposable sandbox — see the security note in
+[architecture.md](architecture.md).
+
+## scripts/entrypoint.sh
+
+Runs as the arbitrary runtime uid. If that uid has no `/etc/passwd` entry
+(common — many tools misbehave without one), it appends a passwd entry pointing
+at the world-writable HOME, plus a matching `/etc/shadow` entry (the `*`
+password field means no password login; sudo is NOPASSWD anyway). Then it runs
+the APPEND_SYSTEM merge and `exec`s the requested command.
+
+## scripts/merge-append-system.sh
+
+Assembles the final `~/.pi/agent/APPEND_SYSTEM.md` pi reads: host append (if the
+launcher staged one at `/opt/pa/APPEND_SYSTEM.host.md`) first, a `---`
+separator, then the baked base (`/opt/pa/APPEND_SYSTEM.base.md`). If no host
+file was staged, the target is just the base. Regenerated every start, so
+nothing accumulates. See [usage.md](usage.md).
+
+## build.sh
+
+Builds the image for amd64 and arm64 and optionally pushes. Requires Docker with
+buildx. Registers QEMU binfmt handlers for foreign-arch builds unless
+`SKIP_QEMU=1` (CI sets up QEMU with an action). Creates/selects a
+`docker-container` buildx builder (required for multi-arch). Multi-arch images
+can't be loaded into the local daemon, so `PUSH=0` only verifies the build.
+
+Env: `IMAGE`, `TAG`, `PLATFORMS`, `PUSH`, `BUILDER`, `SKIP_QEMU`. See
+[building.md](building.md).
+
+## smoketest.sh
+
+Tests an existing local image (never builds). Runs every check as an arbitrary
+uid with a temporary mise cache volume, which is removed on exit unless
+`KEEP=1`. Env: `IMAGE`, `KEEP`, `UID_TEST`. The full check list is in
+[testing.md](testing.md).
+
+Notable check internals:
+- The auto-install check drops a `.ruby-version` in a temp dir and asserts
+  `ruby` reports "command not found" (no compile).
+- The merge checks use the baked base file itself as a stand-in host append; the
+  sentinel string `沙盒之境` (the first heading) proves host content leads, and a
+  count of 2 proves both host and base are present.
