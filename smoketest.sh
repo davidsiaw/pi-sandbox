@@ -62,6 +62,10 @@ run 'mise ls node' | grep -q '20\.' && pass "cache volume persists node@20" || f
 run 'sudo -n true 2>&1 && echo SUDO_OK' | grep -q SUDO_OK \
   && pass "passwordless sudo works" || fail "passwordless sudo failed"
 
+ver="$(run 'cat /usr/lib/node_modules/@earendil-works/pi-coding-agent/package.json' | grep -oE '"version": *"[^"]+"' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+run 'cat "$HOME/.pi/agent/settings.json"' | grep -q "\"lastChangelogVersion\": \"${ver}\"" \
+  && pass "settings seeded with current version (no changelog)" || fail "settings not seeded with pi version"
+
 run 'test -s /opt/pa/APPEND_SYSTEM.base.md && echo BASE_OK' | grep -q BASE_OK \
   && pass "baked APPEND_SYSTEM.base.md present" || fail "baked base guidance missing"
 

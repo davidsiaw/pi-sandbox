@@ -12,4 +12,8 @@ if [ -x /usr/local/bin/merge-append-system.sh ]; then
   /usr/local/bin/merge-append-system.sh || true
 fi
 
+if [ -x /usr/local/bin/seed-settings.sh ]; then
+  /usr/local/bin/seed-settings.sh || true
+fi
+
 exec "$@"

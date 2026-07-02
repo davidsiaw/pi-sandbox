@@ -97,8 +97,14 @@ natively — no flag, no shell interpolation of prompt text. See
 At runtime the container is launched with `--user <uid>:<gid>`. That uid may not
 exist in `/etc/passwd`, which makes tools like npm, git, and mise misbehave. The
 entrypoint appends a synthetic passwd entry for the current uid (pointing at the
-world-writable `HOME`), runs the APPEND_SYSTEM merge, then `exec`s the
-requested command (default: a login shell so mise activates).
+world-writable `HOME`), runs the APPEND_SYSTEM merge and the settings seed
+(`seed-settings.sh`), then `exec`s the requested command (default: a login shell
+so mise activates).
+
+`seed-settings.sh` writes a writable `~/.pi/agent/settings.json` from the staged
+host copy (`/opt/pa/settings.host.json`, if mounted) plus `lastChangelogVersion`
+set to the image's pi version, so pi never replays its startup changelog. See
+[usage.md](usage.md).
 
 ## The arbitrary-uid model (why no user is baked)
 

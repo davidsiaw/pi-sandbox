@@ -23,7 +23,7 @@ the working directory.
 | named volume `pi-sandbox-mise`     | `/home/agent/.local/share/mise`                  | rw   | caches compiled runtimes (see [runtimes.md](runtimes.md)) |
 | `~/.pi/agent/skills`               | `/home/agent/.pi/agent/skills`                   | rw   | agent-authored skills persist |
 | `~/.pi/agent/extensions`           | `/home/agent/.pi/agent/extensions`               | rw   | agent-authored extensions persist |
-| `~/.pi/agent/settings.json`        | same                                             | ro   | agent reads, shouldn't rewrite |
+| `~/.pi/agent/settings.json`        | `/opt/pa/settings.host.json`                     | ro   | staged, then seeded (see below) |
 | `~/.pi/agent/models.json`          | same                                             | ro   | model config |
 | `~/.pi/agent/trust.json`           | same                                             | ro   | trust config |
 | `~/.pi/agent/auth.json` (optional) | same                                             | ro   | model auth token (see below) |
@@ -95,6 +95,21 @@ accumulates.
 Even when a host `SYSTEM.md` *replaces* the base prompt, pi still appends
 `APPEND_SYSTEM.md` afterward — so the container guidance lands either way. No
 shell interpolation of prompt text is involved; pi loads the files natively.
+
+## Quiet startup (no changelog blob)
+
+pi shows a "What's New" changelog on startup when the `lastChangelogVersion` in
+`settings.json` is older than the installed pi version. In a sandbox the host
+`settings.json` is read-only, so pi can never persist the new version — it would
+replay the changelog on *every* run.
+
+To avoid this, `pa` does **not** mount `settings.json` at its real slot. It
+stages the host copy (if any) at `/opt/pa/settings.host.json`, and the container
+entrypoint runs `seed-settings.sh`, which writes a **writable**
+`~/.pi/agent/settings.json` (in the ephemeral HOME) containing your host
+settings plus `lastChangelogVersion` set to the image's pi version. Since that
+always matches the installed version, there are no "new" entries and no
+changelog. Your host `settings.json` is never modified.
 
 ## Forwarding secrets / env vars
 

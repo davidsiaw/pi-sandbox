@@ -32,6 +32,8 @@ cache volume, exercising the real runtime path a user would hit:
 | pi resolves to system node | `which pi` → `/usr/bin/pi` (not a mise shim) |
 | pi still runs after node switch | pi is unaffected by mise Node changes |
 | cache volume persists node@20 | the installed runtime survives across runs |
+| passwordless sudo works | the agent can `sudo apt install` during a task |
+| settings seeded with current version (no changelog) | `settings.json` gets `lastChangelogVersion` = installed pi version, so pi doesn't replay its changelog |
 | baked APPEND_SYSTEM.base.md present | container guidance is baked into the image |
 | baked skill present | a skill is baked at `/opt/pa/skills` |
 | baked extension present | an extension is baked at `/opt/pa/extensions` |

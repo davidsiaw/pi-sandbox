@@ -110,6 +110,17 @@ at the world-writable HOME, plus a matching `/etc/shadow` entry (the `*`
 password field means no password login; sudo is NOPASSWD anyway). Then it runs
 the APPEND_SYSTEM merge and `exec`s the requested command.
 
+## scripts/seed-settings.sh
+
+Runs from the entrypoint as the runtime uid. Writes a writable
+`~/.pi/agent/settings.json` combining the staged host settings
+(`/opt/pa/settings.host.json`, if the launcher mounted one) with
+`lastChangelogVersion` set to the installed pi version (read from the package's
+`package.json`). This stops pi from replaying its startup changelog every run —
+the host `settings.json` can't be written to (mounted read-only), so pi could
+never persist the seen version itself. The host file is never modified. See
+[usage.md](usage.md).
+
 ## scripts/merge-append-system.sh
 
 Assembles the final `~/.pi/agent/APPEND_SYSTEM.md` pi reads: host append (if the

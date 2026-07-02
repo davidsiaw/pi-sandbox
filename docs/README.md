@@ -56,7 +56,8 @@ picon/
     ├── install-mise.sh        # mise, system-wide
     ├── setup-home.sh          # writable HOME for arbitrary uid
     ├── merge-append-system.sh # merges host + baked APPEND_SYSTEM at startup
-    └── entrypoint.sh          # passwd entry + append merge at runtime
+    ├── seed-settings.sh       # seeds settings.json to suppress the changelog
+    └── entrypoint.sh          # passwd entry + append merge + settings seed
 ```
 
 The `pa` launcher lives in `~/crun.d/pa` (part of the user's crun toolkit), not
