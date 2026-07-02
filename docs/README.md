@@ -44,6 +44,10 @@ picon/
 ├── docs/                      # this documentation
 ├── pa-context/                # baked always-in-context guidance
 │   └── APPEND_SYSTEM.base.md   # env facts injected into pi's system prompt
+├── pa-skills/                 # skills baked into the image (subdir per skill)
+│   └── <name>/SKILL.md
+├── pa-extensions/             # extensions baked into the image (subdir per ext)
+│   └── <name>/index.ts
 └── scripts/                   # build steps, kept out of the Dockerfile
     ├── install-system-deps.sh # apt packages (build/runtime libs)
     ├── install-node-system.sh # fixed system Node for pi

@@ -65,6 +65,18 @@ run 'sudo -n true 2>&1 && echo SUDO_OK' | grep -q SUDO_OK \
 run 'test -s /opt/pa/APPEND_SYSTEM.base.md && echo BASE_OK' | grep -q BASE_OK \
   && pass "baked APPEND_SYSTEM.base.md present" || fail "baked base guidance missing"
 
+run 'ls /opt/pa/skills/*/SKILL.md 2>/dev/null' | grep -q SKILL.md \
+  && pass "baked skill present" || fail "baked skill missing"
+run 'ls /opt/pa/extensions/*/index.ts 2>/dev/null' | grep -q index.ts \
+  && pass "baked extension present" || fail "baked extension missing"
+
+out="$(run 'pi -e /opt/pa/extensions/pa-example -p hi 2>&1 | head -20')"
+if echo "$out" | grep -qi 'Failed to load extension'; then
+  fail "baked extension fails to load"
+else
+  pass "baked extension loads (no load error)"
+fi
+
 out="$(run 'diff -q /opt/pa/APPEND_SYSTEM.base.md "$HOME/.pi/agent/APPEND_SYSTEM.md" >/dev/null 2>&1 && echo SAME')"
 echo "$out" | grep -q SAME \
   && pass "no host append -> target equals baked base" || fail "target != base when no host append"

@@ -29,6 +29,9 @@ COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
 COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
 RUN chmod 0755 /usr/local/bin/merge-append-system.sh
 
+COPY pa-skills /opt/pa/skills
+COPY pa-extensions /opt/pa/extensions
+
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 

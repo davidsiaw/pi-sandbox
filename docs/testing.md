@@ -33,6 +33,9 @@ cache volume, exercising the real runtime path a user would hit:
 | pi still runs after node switch | pi is unaffected by mise Node changes |
 | cache volume persists node@20 | the installed runtime survives across runs |
 | baked APPEND_SYSTEM.base.md present | container guidance is baked into the image |
+| baked skill present | a skill is baked at `/opt/pa/skills` |
+| baked extension present | an extension is baked at `/opt/pa/extensions` |
+| baked extension loads (no load error) | pi loads the baked extension without error |
 | no host append -> target equals baked base | merge falls back to base when no host file staged |
 | host append is merged first | staged host append leads the assembled file |
 | host + base both present in merge | merge includes both host and baked content |

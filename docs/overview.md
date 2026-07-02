@@ -66,5 +66,6 @@ agent in a disposable container keeps all of that mess contained:
 | `pa` launcher               | `~/crun.d/pa` (crun toolkit)  | runs the image against the current dir   |
 | mise cache volume           | Docker named volume           | persists compiled runtimes across runs   |
 | `pa-context/`               | this repo                     | baked system-prompt guidance for the agent |
+| `pa-skills/`, `pa-extensions/` | this repo                  | skills & extensions baked into the image |
 
 The image is published to Docker Hub as **`davidsiaw/pi-sandbox`**.

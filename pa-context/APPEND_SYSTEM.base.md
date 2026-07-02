@@ -17,3 +17,4 @@
 - 覽器之術：Playwright 與 Chromium 預居 `/opt/ms-playwright`。
   啟 Chromium 須 `args: ['--no-sandbox']`。
 - 無詞之 `sudo` 在，鑄時可補缺庫。慎用，其變朝生暮死。
+- 欲知今夕何夕，速行 `date` 一觀，勿臆。

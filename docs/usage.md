@@ -138,6 +138,36 @@ Both are additive; the openv source overrides `pa.env` for the same var (Docker
 keeps the last `-e`). Neither mounts a secret file into the container, and no
 secret is baked into the image.
 
+## Baked skills & extensions
+
+The image can ship its own skills and extensions, separate from the ones you
+keep on the host. They live in the repo under `pa-skills/` and `pa-extensions/`,
+are copied into the image at `/opt/pa/skills` and `/opt/pa/extensions`, and are
+loaded additively by `pa`:
+
+- Skills: `pi --skill /opt/pa/skills` (pi discovers every subdirectory
+  containing a `SKILL.md`).
+- Extensions: one `-e /opt/pa/extensions/<name>` per subdirectory that has an
+  `index.ts`.
+
+Each baked resource is a **subdirectory**:
+
+```
+pa-skills/<name>/SKILL.md
+pa-extensions/<name>/index.ts   (plus any helper files it needs)
+```
+
+These are loaded *in addition to* the host skills/extensions mounted from
+`~/.pi/agent/` — nothing is shadowed, because the baked copies live at a
+different path (`/opt/pa/...`). Give baked skills unique names (the examples use
+a `pa-` prefix) so they never collide with a host skill of the same name; on a
+collision pi keeps the first found and warns.
+
+Why not bake into `~/.pi/agent/skills` directly? `pa` mounts those paths from
+the host read-write, so a baked copy there would be hidden by the mount at
+runtime. The `/opt/pa` + CLI-flag approach keeps image and host resources
+orthogonal, the same way the baked `APPEND_SYSTEM.base.md` is kept separate.
+
 ## Credentials: the `auth.json` trade-off
 
 By default `pa` mounts `~/.pi/agent/auth.json` read-only so the agent can talk

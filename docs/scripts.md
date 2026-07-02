@@ -35,10 +35,13 @@ Build stages, in order:
    - `MISE_NOT_FOUND_AUTO_INSTALL=false` — do NOT silently compile a missing
      runtime when a shim is called; the agent installs versions explicitly.
 5. **Writable HOME + passwd/shadow appendable** (`setup-home.sh`).
-6. **Baked guidance + merge** (`APPEND_SYSTEM.base.md`,
-   `merge-append-system.sh`). The launcher stages any host `APPEND_SYSTEM.md` at
-   `/opt/pa/APPEND_SYSTEM.host.md`; the merge script combines host (first) +
-   base (second) into the `APPEND_SYSTEM.md` slot pi loads natively.
+6. **Baked guidance + merge + resources** (`APPEND_SYSTEM.base.md`,
+   `merge-append-system.sh`, `pa-skills/`, `pa-extensions/`). The launcher
+   stages any host `APPEND_SYSTEM.md` at `/opt/pa/APPEND_SYSTEM.host.md`; the
+   merge script combines host (first) + base (second) into the
+   `APPEND_SYSTEM.md` slot pi loads natively. Skills are copied to
+   `/opt/pa/skills` and extensions to `/opt/pa/extensions`, loaded additively by
+   `pa` via `--skill` / `-e`. See [usage.md](usage.md).
 7. **Entrypoint** (`entrypoint.sh`). `CMD ["bash", "-l"]` is a login shell so
    `/etc/profile.d/mise.sh` (mise activation) is sourced.
 
