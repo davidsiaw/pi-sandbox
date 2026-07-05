@@ -20,9 +20,9 @@ else
 fi
 docker buildx inspect --bootstrap >/dev/null
 
-OUTPUT_ARGS=()
+OUTPUT_ARGS=""
 if [ "$PUSH" = "1" ]; then
-  OUTPUT_ARGS+=(--push)
+  OUTPUT_ARGS+=" --push "
 else
   echo "PUSH=0 -> building both arches without pushing (image not loaded locally)"
 fi
