@@ -39,4 +39,4 @@ jobs:
           # QEMU already registered by setup-qemu-action; skip the local install.
           SKIP_QEMU: "1"
           TAG: ${{ github.event.inputs.tag || 'latest' }}
-        run: sh build.sh
+        run: bash build.sh
