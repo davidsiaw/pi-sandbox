@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu pipefail
 
 IMAGE="${IMAGE:-davidsiaw/pi-sandbox}"
 TAG="${TAG:-latest}"
