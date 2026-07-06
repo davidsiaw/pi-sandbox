@@ -4,19 +4,82 @@ on:
   push:
     branches: [master]
     tags: ["v*"]
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Image tag to push"
-        default: latest
+      pi_version:
+        description: "pi version to build (blank = npm latest)"
+        default: ""
+      force:
+        description: "Build even if the version tag already exists"
+        type: boolean
+        default: false
 
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      pi_version: ${{ steps.decide.outputs.pi_version }}
+    steps:
+      - name: Resolve pi version and whether it needs building
+        id: decide
+        env:
+          IMAGE: davidsiaw/pi-sandbox
+          INPUT_VERSION: ${{ github.event.inputs.pi_version }}
+          FORCE: ${{ github.event.inputs.force }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="$(curl -fsSL https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest \
+              | grep -oE '"version":"[^"]+"' | head -1 | cut -d'"' -f4)"
+          fi
+          if [ -z "${version}" ]; then
+            echo "Could not resolve pi version" >&2
+            exit 1
+          fi
+          echo "pi_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved pi version: ${version}"
+
+          # Always build on push/tag events (source changed).
+          if [ "${EVENT}" = "push" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "push event -> build"
+            exit 0
+          fi
+
+          if [ "${FORCE}" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "force -> build"
+            exit 0
+          fi
+
+          # For schedule/dispatch: build only if the version tag is missing.
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${version}")"
+          if [ "${code}" = "200" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "tag ${version} already exists -> skip"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "tag ${version} missing (http ${code}) -> build"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PI_VERSION: ${{ needs.check.outputs.pi_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -39,6 +102,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: davidsiaw/pi-sandbox:${{ github.event.inputs.tag || 'latest' }}
+          build-args: |
+            PI_VERSION=${{ needs.check.outputs.pi_version }}
+          tags: |
+            davidsiaw/pi-sandbox:latest
+            davidsiaw/pi-sandbox:${{ needs.check.outputs.pi_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

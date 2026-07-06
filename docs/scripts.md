@@ -63,9 +63,11 @@ runtime is untouched. Honors `PI_NODE_MAJOR` (default 22).
 
 ## scripts/install-pi.sh (root)
 
-`npm install -g @earendil-works/pi-coding-agent` on the fixed system Node, so pi
-keeps working even when a project switches Node via mise and even when the mise
-data dir is replaced by a mounted cache volume at runtime.
+`npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}` (default `latest`,
+set via the `PI_VERSION` build arg) on the fixed system Node, so pi keeps
+working even when a project switches Node via mise and even when the mise data
+dir is replaced by a mounted cache volume at runtime. CI pins `PI_VERSION` to an
+exact release so each image is reproducible and tagged with its pi version.
 
 ## scripts/install-browser.sh (root)
 
