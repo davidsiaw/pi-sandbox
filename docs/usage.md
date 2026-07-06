@@ -36,13 +36,24 @@ Note the project is mounted **at its real host path** (e.g.
 `/Users/you/proj` → `/Users/you/proj`), matching the convention of the other
 crun tools. This keeps absolute paths in output/errors meaningful on the host.
 
+### Sessions
+
+pi's session files are stored in a **`.pi-sessions/`** directory inside the
+project, not in the container's ephemeral home. `pa` creates `$PWD/.pi-sessions`
+on the host (so it's owned by you) and launches pi with
+`--session-dir "$PWD/.pi-sessions"`. Since the project is already mounted at its
+real path, sessions persist on the host and survive the container. Add
+`.pi-sessions/` to your project's `.gitignore` if you don't want them tracked.
+
 ### What is deliberately *not* mounted
 
 - other `~/.pi/` extension state (files an extension keeps outside
   `~/.pi/agent`) — stays on the host, out of the sandbox. Tools that only read
   such files (rather than an env var) won't work in the sandbox unless you add
   a mount for them.
-- `~/.pi/agent/sessions`, `bin`, `npm` — sandbox-local, ephemeral, auto-cleaned.
+- `~/.pi/agent/sessions`, `bin`, `npm` — the container's own home is ephemeral
+  and auto-cleaned. (pi's sessions go to the project's `.pi-sessions/` instead —
+  see above — not the container home.)
 
 Env-based secrets (any tool that reads an env var) are *forwarded* rather than
 mounted — see [Forwarding secrets / env vars](#forwarding-secrets--env-vars)

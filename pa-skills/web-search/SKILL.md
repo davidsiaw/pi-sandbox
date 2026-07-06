@@ -1,119 +1,93 @@
 ---
 name: web-search
 description: >-
-  Search the web and read pages reliably from the pa sandbox using the
-  stealth_browse tool, then follow promising links a few hops deep to actually
-  find the answer. Use whenever the user asks you to look something up online,
-  research a topic, find an article/docs/news, check a fact on the web, or when
-  a plain fetch returns a bot-block (403/429/503) or a page that does not
-  contain the answer. Covers link collection (extract="a" extract_attr="href"),
-  ranking candidate links by their anchor text, and bounded breadth-first
-  crawling so you don't wander aimlessly.
+  以 stealth_browse 於 pa 匣中搜網、讀頁，循善鏈數跳以得答。凡用戶命汝上網查物、研一題、
+  尋文獻／文檔／新聞、驗網上一事，或平常 fetch 遭擋（403／429／503）、或所得之頁無答，
+  皆用之。含集鏈（extract="a" extract_attr="href"）、以錨字評鏈、有界廣搜（BFS）勿漫遊。
 ---
 
 # web-search
 
-Reliable web research from the pa sandbox. The sandbox IP gets bot-blocked by
-Reddit, Cloudflare-fronted sites, and search engines when using a plain
-headless browser, so **always use the `stealth_browse` tool** (from the
-`pa-stealth-browse` extension) instead of ad-hoc Playwright or `curl`.
+（此言雖文言，然答用戶當以用戶所用之語。）
 
-## Core idea: collect links, then follow the hopeful ones
+於 pa 匣中穩健研網。匣之 IP 遭 Reddit、Cloudflare 之站、搜索引擎以裸 headless 覽器擋，
+故**恆用 `stealth_browse` 具**（出 `pa-stealth-browse` 延），勿用臨時 Playwright 或 `curl`。
 
-A single page rarely contains the full answer. The winning loop is:
+## 綱：集鏈，followed 善者
 
-1. **Fetch** the page (and its text).
-2. **Collect links** on that page as `(anchor text, absolute URL)` pairs.
-3. **Rank** links by how promising their anchor text / URL looks for the goal.
-4. **Follow** the top few, a bounded number of hops, until the answer appears.
+單頁鮮含全答。勝之環：
 
-Anchor text is the single most useful signal for deciding where to go next.
-Never follow raw URLs blind — read their text first.
+1. **取**頁（及其文）。
+2. **集鏈**為 `(錨字, 絕對 URL)` 對。
+3. **評**鏈，視錨字／URL 對目標之望。
+4. **循**首數者，跳數有界，至答現。
 
-## The stealth_browse tool
+錨字乃決下往何處之至要之信。勿盲循裸 URL——先讀其字。
 
-Key parameters:
+## stealth_browse 具
 
-- `url` — page to fetch (http/https).
-- `extract` — CSS selector; returns innerText of each match.
-- `extract_attr` — attribute to also return per match. **Use `"href"` with
-  `extract="a"` to collect links** (returns resolved absolute URLs).
-- `scroll` / `scroll_wait_ms` — scroll passes for lazy/infinite-scroll feeds
-  (Reddit, Twitter mirrors). Start with `scroll=5` for feeds.
-- `wait_ms` — extra settle time for JS-heavy pages (try `3000`+).
-- `max_attempts` — retry-with-backoff on blocks (default 4; leave as-is).
-- `max_chars` — cap returned page text (default 8000).
+要參：
 
-The tool already masks the automation fingerprint and retries transient blocks,
-so a `blocked: true` result means it genuinely could not get through.
+- `url`——所取之頁（http／https）。
+- `extract`——CSS selector；返每中者之 innerText。
+- `extract_attr`——每中者亦返之屬性。**以 `"href"` 配 `extract="a"` 集鏈**（返解析之絕對 URL）。
+- `scroll` ／ `scroll_wait_ms`——為懶載／無限捲之 feed（Reddit、Twitter 鏡）捲之。feed 始以 `scroll=5`。
+- `wait_ms`——JS 重之頁多候（試 `3000`+）。
+- `max_attempts`——遭擋則退避重試（默 4；勿改）。
+- `max_chars`——限返之頁文（默 8000）。
 
-### Collect links from a page
+具已掩自動化指紋、重試瞬擋，故 `blocked: true` 者，乃真不得過也。
+
+### 集一頁之鏈
 
 ```
 stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
 ```
 
-You get a numbered list of `text` + `[href] URL`. That is your candidate set.
+得 `text` + `[href] URL` 之號列。此汝之候選集也。
 
-To narrow to real content links, prefer selectors that target the content
-region when you know it (e.g. `article a`, `main a`, `h2 a`, `.post a`), which
-cuts nav/footer/login noise before you even rank.
+欲窄至真內容鏈，知內容區則擇之（如 `article a`、`main a`、`h2 a`、`.post a`），
+先斬 nav／footer／login 之雜，後評。
 
-## The research loop (bounded BFS)
+## 研之環（有界 BFS）
 
-Follow this procedure. **Bound it** so you don't crawl forever.
+循此法。**界之**勿永爬。
 
-1. **Seed.** Pick 1–3 starting URLs.
-   - Have a specific site? Start there.
-   - Need to discover sources? Start from a search results page you can read.
-     DuckDuckGo HTML (`https://duckduckgo.com/html/?q=...`) and Bing sometimes
-     work via stealth_browse; if a search engine returns a block or strips
-     links, go directly to a likely authoritative site or a topic hub/index
-     page instead.
+1. **種。**擇一至三始 URL。
+   - 有定站？始於此。
+   - 需覓源？始於可讀之搜索果頁。DuckDuckGo HTML（`https://duckduckgo.com/html/?q=...`）
+     與 Bing 或可經 stealth_browse；若搜索引擎返擋或去鏈，則徑往可信之站或題之樞頁／索引頁。
 
-2. **Read + collect.** For each page:
-   - Read the page text. **If it already answers the question, stop and
-     report** — cite the URL.
-   - If not, collect links (`extract="a" extract_attr="href"`).
+2. **讀且集。**每頁：
+   - 讀頁文。**若已答，止而報**——引其 URL。
+   - 未答，則集鏈（`extract="a" extract_attr="href"`）。
 
-3. **Rank candidates.** Score each `(text, url)` by relevance to the goal:
-   - anchor text contains the key terms of the question → high
-   - URL path looks like an article/story/doc (`/article/`, `/story/`,
-     `/blog/`, dated slugs, `/docs/`) → boost
-   - obvious non-content (login, signup, privacy, terms, share, `mailto:`,
-     external social profiles, tag/category indexes) → drop
-   - already visited → drop
+3. **評候選。**每 `(text, url)` 依對目標之切評之：
+   - 錨字含問之要詞 → 高
+   - URL 徑似文章／story／文檔（`/article/`、`/story/`、`/blog/`、含日之 slug、`/docs/`）→ 升
+   - 明非內容（login、signup、privacy、terms、share、`mailto:`、外社交、tag／類索引）→ 棄
+   - 已訪 → 棄
 
-4. **Follow.** Visit the top **2–3** ranked links. Repeat from step 2.
+4. **循。**訪首 **2–3** 評鏈。自第二步復始。
 
-5. **Stop conditions (respect all of these):**
-   - Answer found → report it. **Always cite the exact URL(s).**
-   - **Depth limit: 3 hops** from a seed.
-   - **Budget limit: ~8–10 total page fetches** for a normal query. If you hit
-     the budget without an answer, report what you found, the best leads, and
-     say the answer wasn't confirmed. Do not silently keep going.
-   - Two consecutive pages add no new relevant links → back up and try the next
-     best unexplored candidate, or a different seed.
+5. **止之條（皆守之）：**
+   - 得答 → 報之。**恆引確之 URL。**
+   - **深限：自種 3 跳。**
+   - **算限：常問約 8–10 取頁。**若達限而無答，報所得、最佳之緒、並言答未確。勿默續行。
+   - 連二頁無新切鏈 → 退，試次佳未探之候選，或另一種。
 
-Keep a short running list of **visited URLs** and **unexplored good
-candidates** so you can backtrack instead of looping.
+存**已訪 URL** 與**未探之善候選**之短列，俾可退而勿環。
 
-## Reporting
+## 報
 
-- Lead with the answer.
-- **Cite every claim with the URL it came from.** If synthesized from several
-  pages, list them.
-- If blocked or inconclusive, say so plainly and list the best leads you found.
+- 首陳答。
+- **每述引其所出之 URL。**若合數頁而成，列之。
+- 若遭擋或不決，直言之，並列所得最佳之緒。
 
-## Gotchas
+## 陷
 
-- **Don't override the `Accept` header** manually anywhere — some sites (Reddit)
-  serve a stripped 3-item fallback. stealth_browse already avoids this.
-- Feeds (Reddit, mirrors) need `scroll` to load more than the first handful of
-  items.
-- `extract` returns **innerText**; only `extract_attr` returns URLs. To harvest
-  links you MUST pass `extract_attr="href"`.
-- Datacenter/consumer-IP blocks are per-site rate limits — if `blocked: true`
-  persists after retries, try a different source rather than hammering.
-- Prefer content-scoped selectors (`article a`, `main a`) over bare `a` to
-  reduce nav/boilerplate noise in the candidate set.
+- **勿於何處手改 `Accept` 頭**——某站（Reddit）返削之三項 fallback。stealth_browse 已避此。
+- feed（Reddit、鏡）需 `scroll` 以載首數項之外。
+- `extract` 返 **innerText**；唯 `extract_attr` 返 URL。集鏈**必**傳 `extract_attr="href"`。
+- 機房／民 IP 之擋乃每站之限速——若 `blocked: true` 重試後仍持，則另尋一源，勿捶之。
+- 擇內容域之 selector（`article a`、`main a`）勝裸 `a`，以減候選集之 nav／樣板之雜。
