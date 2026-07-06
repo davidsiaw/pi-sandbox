@@ -174,6 +174,31 @@ function makeYousoroInitScript(major: string): string {
 		// Populate plugins/languages that headless leaves empty.
 		defineNav("plugins", () => [1, 2, 3, 4, 5]);
 		defineNav("languages", () => ["en-US", "en"]);
+		// Coherent hardware for the macOS identity we claim. Containers report
+		// values that don't match a "MacBook"; anti-bots cross-check these against
+		// the platform. 8 cores / 8 GB is an unremarkable, real-looking laptop.
+		defineNav("hardwareConcurrency", () => 8);
+		defineNav("deviceMemory", () => 8);
+		defineNav("platform", () => "MacIntel");
+		defineNav("maxTouchPoints", () => 0);
+		defineNav("vendor", () => "Google Inc.");
+		// Screen/window geometry consistent with a real macOS display, the 1280x800
+		// viewport, and a Retina-ish devicePixelRatio. Headless defaults (e.g. 0 /
+		// mismatched availHeight, dpr 1 on "macOS") are a known tell.
+		const defineScreenProp = (name, value) => {
+			try {
+				Object.defineProperty(window.screen, name, { get: () => value, configurable: true });
+			} catch (e) {}
+		};
+		defineScreenProp("width", 1440);
+		defineScreenProp("height", 900);
+		defineScreenProp("availWidth", 1440);
+		defineScreenProp("availHeight", 875); // minus the macOS menu bar
+		defineScreenProp("colorDepth", 30);
+		defineScreenProp("pixelDepth", 30);
+		try {
+			Object.defineProperty(window, "devicePixelRatio", { get: () => 2, configurable: true });
+		} catch (e) {}
 		// Real Chrome exposes window.chrome.
 		window.chrome = { runtime: {} };
 		// Spoof permissions query (headless answers "denied" for notifications).

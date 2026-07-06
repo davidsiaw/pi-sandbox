@@ -89,6 +89,17 @@ else
   pass "baked extension loads (no load error)"
 fi
 
+# yousoro-browse behavioral guard: fingerprint init script + block/challenge
+# detection (visible-text, not raw HTML — the 403-then-redirect fix). Auth-free,
+# runs a real Chromium via the baked selftest.
+out="$(run 'cd /opt/pa/extensions/pa-yousoro-browse && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "yousoro-browse selftest (fingerprint + detection)"
+else
+  fail "yousoro-browse selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 out="$(run 'diff -q /opt/pa/APPEND_SYSTEM.base.md "$HOME/.pi/agent/APPEND_SYSTEM.md" >/dev/null 2>&1 && echo SAME')"
 echo "$out" | grep -q SAME \
   && pass "no host append -> target equals baked base" || fail "target != base when no host append"

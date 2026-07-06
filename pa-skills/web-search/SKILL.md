@@ -122,7 +122,7 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 - ✅ **Lobsters**——`https://lobste.rs/search?q=<q>&what=stories&order=relevance` ——技術向論壇，優質鏈。
 - ✅ **Stack Exchange API**——`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=<q>&site=stackoverflow` ——返 JSON，技術 QA。**首選**（無 challenge、潔）。
 - ✅ **Stack Overflow／Stack Exchange 網頁**——`https://stackoverflow.com/questions?tab=Newest`、`https://stackexchange.com/`——**今亦通**。彼行 Cloudflare「先 403 後轉」之關：首返 403 挑戰頁，指紋過則轉真頁。yousoro_browse 候其自解，故通。（然結構化查詢仍以上之 API 為佳。）
-- ❌ **Marginalia**——`search.marginalia.nu` 超時（不可靠）。
+- ✅ **Marginalia**——`https://search.marginalia.nu/search?query=<q>`——**今通**（昔超時，今返真果）。獨立索引，偏長文、舊網、非商業之頁，異於主流引擎，覓冷僻源佳。
 
 **JSON／API 端點（均試通，優於爬 HTML）：**
 

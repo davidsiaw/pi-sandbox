@@ -40,6 +40,7 @@ cache volume, exercising the real runtime path a user would hit:
 | baked skill present | a skill is baked at `/opt/pa/skills` |
 | baked extension present | an extension is baked at `/opt/pa/extensions` |
 | baked extension loads (no load error) | pi loads the baked extension without error |
+| yousoro-browse selftest (fingerprint + detection) | runs `pa-yousoro-browse/selftest.mjs` in a real Chromium: asserts the fingerprint init script (webdriver=false, no leaked navigator own-props, userAgentData=Google Chrome, non-SwiftShader WebGL, spoofed hardwareConcurrency/platform/screen/dpr, stable canvas noise) and that block/challenge detection keys off visible text not raw HTML (the 403-then-redirect fix) |
 | no host append -> target equals baked base | merge falls back to base when no host file staged |
 | host append is merged first | staged host append leads the assembled file |
 | host + base both present in merge | merge includes both host and baked content |

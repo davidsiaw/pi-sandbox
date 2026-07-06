@@ -39,6 +39,13 @@ apt-get install -y --no-install-recommends \
   procps \
   less \
   vim-tiny \
-  xvfb
+  xvfb \
+  fontconfig \
+  fonts-liberation \
+  fonts-liberation2 \
+  fonts-dejavu \
+  fonts-noto-core \
+  fonts-noto-cjk \
+  fonts-noto-color-emoji
 
 rm -rf /var/lib/apt/lists/*
