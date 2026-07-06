@@ -109,7 +109,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Smoke test
-        run: sh smoketest.sh
+        run: bash smoketest.sh
 
       - name: Build and push (both arches)
         uses: docker/build-push-action@v7
