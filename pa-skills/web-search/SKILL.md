@@ -55,8 +55,84 @@ stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
 
 1. **種。**擇一至三始 URL。
    - 有定站？始於此。
-   - 需覓源？始於可讀之搜索果頁。DuckDuckGo HTML（`https://duckduckgo.com/html/?q=...`）
-     與 Bing 或可經 stealth_browse；若搜索引擎返擋或去鏈，則徑往可信之站或題之樞頁／索引頁。
+   - 需覓源？始於可讀之搜索果頁（見下**薦用之搜索引擎與源**）。
+   - 若搜索引擎返擋或去鏈，則徑往可信之站或題之樞頁／索引頁。
+
+## 薦用之搜索引擎與源
+
+（自匣中 IP 試之，機房 IP，地定於東京。用可通者，避 Cloudflare 牆者。）
+
+**元搜索（覓源）：**
+
+- ✅ **DuckDuckGo HTML**——`https://html.duckduckgo.com/html/?q=...`——最穩。
+  鏈全、snippet 全。果之 URL 裹於 `https://duckduckgo.com/l/?uddg=<編碼>` 轉向；
+  解 `uddg` 參之編碼得真的。
+- ✅ **Yahoo**——`https://search.yahoo.com/search?p=...`——佳，返**直**（未裹）之果 URL 及豐 snippet。
+  雖曰「Powered by Bing」，然 Bing 自身不通時此仍通。
+- ⚠️ **Google**——`https://www.google.com/search?q=...`——通，然匣之 IP 令其返**日文** SERP、鏈裹 tracker。
+  綴 `&hl=en&gl=us` 以強英文。真 URL 埋於 `ved=`／`sca_esv=` 參，或為 `#:~:text=` 片段。
+- ❌ **Bing**——`https://www.bing.com/search?q=...`——**遭擋**：返 CAPTCHA（「Please solve the challenge below」）。勿費心。
+
+**舊牌／替代元搜索（多已轉為 metasearch 面子，非自爬）：**
+
+- ✅ **Dogpile**——`https://www.dogpile.com/serp?q=...` ——通，果潔、URL 直。
+- ✅ **MetaCrawler**——`https://www.metacrawler.com/serp?q=...` ——通（與 Dogpile 同屬 System1）。
+- ✅ **Startpage**——`https://www.startpage.com/sp/search?query=...` ——通，Google 果代取。
+- ✅ **Naver**（韓）——`https://search.naver.com/search.naver?query=...` ——通，但首多韓文廣告。
+- ❌ **Lycos**——`search.lycos.com` DNS 不解（ERR_NAME_NOT_RESOLVED，已废）。
+- ❌ **Ask.com ／ Excite**——旧搜索路徑 404（已去其搜索功能）。
+- ❌ **WebCrawler**——Cloudflare 403。
+- ❌ **Mojeek**——ALTCHA CAPTCHA。
+- ❌ **Yandex**——SmartCaptcha。
+
+**直源（知域則越元搜索）：**
+
+- ✅ **GitHub**——`https://github.com/search?q=...&type=repositories`（無需登入）。
+  亦 `github.com/topics/<題>`、`github.com/trending`。nav 樣板繁，宜濾至 `github.com/<user>/<repo>` 之鏈或用內容域 selector。
+- ✅ **Hugging Face**——`https://huggingface.co/models?...&sort=trending`——覓模型之最結構化源。
+  以 URL facet 濾之，如 `&library=gguf`、`&other=ollama`、`&pipeline_tag=text-generation`。
+- ✅ **Reddit**——通；stealth_browse 自解其 JS challenge。feed／評論用 `scroll=5+`。
+- ❌ **GitLab**——遭 Cloudflare **擋**（「Just a moment...」，403）。
+
+**社群／論壇（覓真人之見）：**
+
+- ✅ **Hacker News**——有公開 JSON API，不須爬、不遭擋，最佳。
+  `https://hn.algolia.com/api/v1/search?query=<q>&tags=story`（按分），
+  `.../search_by_date?query=<q>&tags=story`（按日），`tags=comment` 取評論。
+  返結構 JSON：title、url、points、num_comments、objectID。
+- ✅ **4chan**——官方 JSON API 不遭擋：`https://a.4cdn.org/<board>/catalog.json`（全緒）、
+  `https://a.4cdn.org/<board>/thread/<no>.json`。**無原生全文搜索**（`find.4chan.org` 遭 Cloudflare 403），
+  己取 catalog.json 而濾 `com`／`sub` 字。`/g/` 乃技術板，內有循環之 **「/lmg/」（Local Models General）**主題乃地方模型之樞。
+- ⚠️ **Twitter／X**——本站登入牆。然**替代前端可用**（見下）。
+
+**替代前端／代理（穿墙讀封閉之服務）：**
+
+- ✅ **fxtwitter／其族**——單推代理：`https://api.fxtwitter.com/<user>/status/<id>` 返 JSON（tweet 內文、數據）。
+  同屬：vxtwitter、fixupx。**只取單推**，不能搜索。
+- ✅ **Nitter（poast）**——`https://nitter.poast.org/search?q=<q>&f=tweets` ——**能搜 Twitter**！多數公共 Nitter 已死，此一尚活（偶需重試）。
+- ✅ **Redlib**（Reddit 前端）——`https://redlib.catsarch.com/r/<sub>/search?q=<q>&restrict_sr=on` ——無 Reddit 之 JS challenge，果潔。別的 instance：redlib.perennialte.ch 等。
+- ✅ **Priviblur**（Tumblr 前端）——`https://priviblur.pussthecat.org/search/<q>` ——通。
+- ❌ **SearXNG （searx.be、yewtu.be Invidious）**——多有 antibot 503（unixfox 之驗證頁）。searx.tiekoetter 頁載然 GET 搜索轉向首頁，不可靠。
+
+通則：公共镜像（Nitter、Redlib、Invidious、SearXNG）**好壞隨時變**。一 instance 死則換一個；可於 github.com/zedeus/nitter、各 instance uptime 頁尋活者。
+
+**其他佳始點（均試通）：**
+
+- ✅ **Wikipedia**——`https://en.wikipedia.org/w/index.php?search=<q>` ——背景、定義、引源之樞。
+- ✅ **Lobsters**——`https://lobste.rs/search?q=<q>&what=stories&order=relevance` ——技術向論壇，優質鏈。
+- ✅ **Stack Exchange API**——`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=<q>&site=stackoverflow` ——返 JSON，技術 QA。
+- ❌ **Marginalia**——`search.marginalia.nu` 超時（不可靠）。
+
+**JSON／API 端點（均試通，優於爬 HTML）：**
+
+- ✅ **Wikipedia API**——`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=<q>&format=json` ——比 HTML 潔。
+- ✅ **GitHub API**——`https://api.github.com/search/repositories?q=<q>&sort=stars` ——返 JSON；total_count、full_name、stars 等。未認證限速約 10／分。
+- ✅ **arXiv API**——`https://export.arxiv.org/api/query?search_query=all:<q>&max_results=<n>` ——返 Atom XML。
+  ❗ **空格被拆為 OR**；片語用 `+` 連或引號包之（如 `all:%22local+llm%22`）。
+- ✅ **npm registry**——`https://registry.npmjs.org/-/v1/search?text=<q>&size=<n>` ——返 JSON，包發現。
+- ❌ **PyPI 搜索**——`pypi.org/search` 遭 CAPTCHA（Client Challenge）。已知包名則用 `https://pypi.org/pypi/<name>/json`。
+
+通則：**Cloudflare 前置之站（GitLab、Bing）擋機房 IP。**若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
 
 2. **讀且集。**每頁：
    - 讀頁文。**若已答，止而報**——引其 URL。
