@@ -12,6 +12,7 @@ the host.
 - [architecture.md](architecture.md) — how the image is built and why, layer by layer
 - [usage.md](usage.md) — running the agent with the `pa` launcher, mounts, env toggles
 - [runtimes.md](runtimes.md) — how mise manages Ruby/Node/Python and how the cache works
+- [yousoro-browsing.md](yousoro-browsing.md) — the `pa-yousoro-browse` tool: fingerprint masking, Cloudflare handling, headed/Xvfb, what it does/doesn't fix
 - [building.md](building.md) — `build.sh`, dual-arch builds, and the GitHub workflow
 - [testing.md](testing.md) — `smoketest.sh` and what it verifies
 - [scripts.md](scripts.md) — reference for the (comment-free) Dockerfile and scripts

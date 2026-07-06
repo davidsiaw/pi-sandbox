@@ -15,6 +15,35 @@ If the agent drives Playwright and browsing fails with a sandbox/namespace
 error, add `args: ['--no-sandbox']` to the browser launch, or add
 `--cap-add=SYS_ADMIN` to the `pa` launcher's `docker run`.
 
+## `yousoro_browse` still blocked on some sites
+
+`yousoro_browse` masks the JavaScript/DOM fingerprint layer (webdriver,
+userAgentData → Google Chrome, real WebGL GPU, viewport) and waits out
+Cloudflare "Just a moment" interstitials. It does **not** fix the network layer
+(TLS/JA3 handshake, datacenter IP) or solve CAPTCHAs. So:
+
+- **Cloudflare interstitial ("Just a moment")** — usually clears on its own; if
+  it doesn't within `challenge_wait_ms` (default 20s), it's a harder managed
+  challenge and won't pass.
+- **Image CAPTCHA / "verification required" / "I'm not a robot"** (e.g. PyPI,
+  Mojeek) — reported as `blocked: true`; move to another source. Needs a solver,
+  not a better fingerprint.
+- **Hardest managed challenges** (e.g. `find.4chan.org`) — TLS/IP-level; page-JS
+  spoofing can't help.
+
+`headed=true` (Xvfb-backed) removes some headless tells but, in a GPU-less
+container, does not fix WebGL or the network layer. See
+[yousoro-browsing.md](yousoro-browsing.md) for the full breakdown and the
+before/after effect on the `web-search` source list.
+
+## Headed Chromium fails: "Missing X server or $DISPLAY"
+
+`yousoro_browse headed=true` needs an X display. The extension auto-spawns Xvfb
+on `:99` when `DISPLAY` is unset. If it errors that Xvfb is missing, the image
+was built without it — `scripts/install-system-deps.sh` installs `xvfb`; rebuild
+and re-run the smoke test. If a stale `:99` socket lingers, it reuses/serves
+that display; a fresh container clears it.
+
 ## `mise: Permission denied` when installing a runtime
 
 Symptom:

@@ -53,7 +53,8 @@ OS packages needed to run mise (`curl`, `ca-certificates`, `git`), compile Ruby
 and Python from source (`build-essential`, `libssl-dev`, `libreadline-dev`,
 `zlib1g-dev`, `libyaml-dev`, `libffi-dev`, and friends), and build native gems /
 pip wheels. `sudo` is installed here; the grant is configured in
-`setup-home.sh`.
+`setup-home.sh`. `xvfb` is also installed so `pa-yousoro-browse` can run a headed
+Chromium behind a virtual X display (see [yousoro-browsing.md](yousoro-browsing.md)).
 
 ## scripts/install-node-system.sh (root)
 

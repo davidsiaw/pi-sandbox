@@ -1,7 +1,7 @@
 ---
 name: web-search
 description: >-
-  以 stealth_browse 於 pa 匣中搜網、讀頁，循善鏈數跳以得答。凡用戶命汝上網查物、研一題、
+  以 yousoro_browse 於 pa 匣中搜網、讀頁，循善鏈數跳以得答。凡用戶命汝上網查物、研一題、
   尋文獻／文檔／新聞、驗網上一事，或平常 fetch 遭擋（403／429／503）、或所得之頁無答，
   皆用之。含集鏈（extract="a" extract_attr="href"）、以錨字評鏈、有界廣搜（BFS）勿漫遊。
 ---
@@ -11,7 +11,7 @@ description: >-
 （此言雖文言，然答用戶當以用戶所用之語。）
 
 於 pa 匣中穩健研網。匣之 IP 遭 Reddit、Cloudflare 之站、搜索引擎以裸 headless 覽器擋，
-故**恆用 `stealth_browse` 具**（出 `pa-stealth-browse` 延），勿用臨時 Playwright 或 `curl`。
+故**恆用 `yousoro_browse` 具**（出 `pa-yousoro-browse` 延），勿用臨時 Playwright 或 `curl`。
 
 ## 綱：集鏈，followed 善者
 
@@ -24,7 +24,7 @@ description: >-
 
 錨字乃決下往何處之至要之信。勿盲循裸 URL——先讀其字。
 
-## stealth_browse 具
+## yousoro_browse 具
 
 要參：
 
@@ -41,7 +41,7 @@ description: >-
 ### 集一頁之鏈
 
 ```
-stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
+yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 ```
 
 得 `text` + `[href] URL` 之號列。此汝之候選集也。
@@ -71,7 +71,7 @@ stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
   雖曰「Powered by Bing」，然 Bing 自身不通時此仍通。
 - ⚠️ **Google**——`https://www.google.com/search?q=...`——通，然匣之 IP 令其返**日文** SERP、鏈裹 tracker。
   綴 `&hl=en&gl=us` 以強英文。真 URL 埋於 `ved=`／`sca_esv=` 參，或為 `#:~:text=` 片段。
-- ❌ **Bing**——`https://www.bing.com/search?q=...`——**遭擋**：返 CAPTCHA（「Please solve the challenge below」）。勿費心。
+- ✅ **Bing**——`https://www.bing.com/search?q=...`——**今通**（yousoro_browse 之指紋掩護既備 Google Chrome UA、真 GPU，昔之 CAPTCHA 不復現）。返直 URL、豐 snippet。
 
 **舊牌／替代元搜索（多已轉為 metasearch 面子，非自爬）：**
 
@@ -81,9 +81,9 @@ stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
 - ✅ **Naver**（韓）——`https://search.naver.com/search.naver?query=...` ——通，但首多韓文廣告。
 - ❌ **Lycos**——`search.lycos.com` DNS 不解（ERR_NAME_NOT_RESOLVED，已废）。
 - ❌ **Ask.com ／ Excite**——旧搜索路徑 404（已去其搜索功能）。
-- ❌ **WebCrawler**——Cloudflare 403。
-- ❌ **Mojeek**——ALTCHA CAPTCHA。
-- ❌ **Yandex**——SmartCaptcha。
+- ✅ **WebCrawler**——`https://www.webcrawler.com/serp?q=...`——**今通**（昔 Cloudflare 403，yousoro 之掩既足以過）。
+- ❌ **Mojeek**——ALTCHA CAPTCHA（「Verification required」，非瞬擋，不自解；yousoro_browse 正報 `blocked: true`）。
+- ✅ **Yandex**——`https://yandex.com/search/?text=...`——**今通**（昔 SmartCaptcha，yousoro 之掩既足）。
 
 **直源（知域則越元搜索）：**
 
@@ -91,8 +91,8 @@ stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
   亦 `github.com/topics/<題>`、`github.com/trending`。nav 樣板繁，宜濾至 `github.com/<user>/<repo>` 之鏈或用內容域 selector。
 - ✅ **Hugging Face**——`https://huggingface.co/models?...&sort=trending`——覓模型之最結構化源。
   以 URL facet 濾之，如 `&library=gguf`、`&other=ollama`、`&pipeline_tag=text-generation`。
-- ✅ **Reddit**——通；stealth_browse 自解其 JS challenge。feed／評論用 `scroll=5+`。
-- ❌ **GitLab**——遭 Cloudflare **擋**（「Just a moment...」，403）。
+- ✅ **Reddit**——通；yousoro_browse 自解其 JS challenge。feed／評論用 `scroll=5+`。
+- ✅ **GitLab**——`https://gitlab.com/explore/projects`、`gitlab.com/search?search=...`——**今通**（昔 Cloudflare「Just a moment」403，yousoro 之掩既足以過）。
 
 **社群／論壇（覓真人之見）：**
 
@@ -132,7 +132,7 @@ stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
 - ✅ **npm registry**——`https://registry.npmjs.org/-/v1/search?text=<q>&size=<n>` ——返 JSON，包發現。
 - ❌ **PyPI 搜索**——`pypi.org/search` 遭 CAPTCHA（Client Challenge）。已知包名則用 `https://pypi.org/pypi/<name>/json`。
 
-通則：**Cloudflare 前置之站（GitLab、Bing）擋機房 IP。**若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
+通則：多數 Cloudflare「Just a moment」瞬擋今由 yousoro_browse 自過（Google Chrome 指紋、真 GPU、候其自解）。然**圖形 CAPTCHA（PyPI、Mojeek）與最硬之 managed challenge（find.4chan.org）仍不得過**——此非指紋之事，乃須解謎或真 residential IP。若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
 
 2. **讀且集。**每頁：
    - 讀頁文。**若已答，止而報**——引其 URL。
@@ -162,7 +162,7 @@ stealth_browse url="https://example.com/topic" extract="a" extract_attr="href"
 
 ## 陷
 
-- **勿於何處手改 `Accept` 頭**——某站（Reddit）返削之三項 fallback。stealth_browse 已避此。
+- **勿於何處手改 `Accept` 頭**——某站（Reddit）返削之三項 fallback。yousoro_browse 已避此。
 - feed（Reddit、鏡）需 `scroll` 以載首數項之外。
 - `extract` 返 **innerText**；唯 `extract_attr` 返 URL。集鏈**必**傳 `extract_attr="href"`。
 - 機房／民 IP 之擋乃每站之限速——若 `blocked: true` 重試後仍持，則另尋一源，勿捶之。

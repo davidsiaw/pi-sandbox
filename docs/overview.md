@@ -47,7 +47,10 @@ agent in a disposable container keeps all of that mess contained:
 
 4. **Browser automation built in.**
    Playwright + Chromium are preinstalled so the agent's web-search / browsing
-   features work out of the box. See [architecture.md](architecture.md).
+   features work out of the box. A baked `yousoro_browse` tool adds
+   fingerprint masking and Cloudflare-challenge handling for reading pages that
+   reject plain headless browsers. See [architecture.md](architecture.md) and
+   [yousoro-browsing.md](yousoro-browsing.md).
 
 5. **The agent is told how to use the sandbox.**
    Always-in-context guidance (runtimes are on demand, what's ephemeral,

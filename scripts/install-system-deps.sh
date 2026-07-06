@@ -38,6 +38,7 @@ apt-get install -y --no-install-recommends \
   unzip \
   procps \
   less \
-  vim-tiny
+  vim-tiny \
+  xvfb
 
 rm -rf /var/lib/apt/lists/*

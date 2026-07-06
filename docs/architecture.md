@@ -55,6 +55,10 @@ root-owned, so they:
 This adds roughly 0.5–1 GB to the image. See
 [troubleshooting.md](troubleshooting.md) for the Chromium-in-Docker sandbox note.
 
+`xvfb` is also installed (in `install-system-deps.sh`) so the `pa-yousoro-browse`
+tool can run a **headed** Chromium behind a virtual X display when asked. See
+[yousoro-browsing.md](yousoro-browsing.md).
+
 ### 3. mise — `install-mise.sh` (root)
 
 mise is installed **system-wide** to `/usr/local/bin/mise` (root-owned,

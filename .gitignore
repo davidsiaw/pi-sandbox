@@ -1,0 +1,20 @@
+# Node / npm — extensions import their deps (e.g. typebox) from pi's own
+# bundle at runtime, so per-extension node_modules is a test artifact only.
+# Never commit it; it bloats the repo and the image (Dockerfile COPYs these
+# dirs into /opt/pa/extensions).
+node_modules/
+npm-debug.log*
+.npm/
+
+# pi session files (pa launches pi with --session-dir "$PWD/.pi-sessions")
+.pi-sessions/
+
+# Build / test scratch
+*.tsbuildinfo
+/tmp/
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
