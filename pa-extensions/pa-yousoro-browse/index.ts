@@ -255,7 +255,147 @@ function makeYousoroInitScript(major: string): string {
 		};
 		if (window.WebGLRenderingContext) patchGL(WebGLRenderingContext.prototype);
 		if (window.WebGL2RenderingContext) patchGL(WebGL2RenderingContext.prototype);
+
+		// --- Canvas + Audio fingerprint noise.
+		// Anti-bot systems hash a canvas render or an AudioContext buffer to build a
+		// stable device fingerprint. Two problems for us: (a) headless SwiftShader
+		// produces a KNOWN fingerprint that flags automation, and (b) a perfectly
+		// stable hash across "different users" from one image is itself suspicious.
+		// We inject a tiny per-session deterministic perturbation: enough to move
+		// off the known headless hash, stable within a session so it doesn't look
+		// like anti-fingerprinting noise (which is itself a tell when it changes
+		// every read). A single random seed per page load drives all offsets.
+		// One random seed per page load. All perturbations derive from it and RESET
+		// to it before each read, so the same input always yields the same output
+		// within a session (stable). A hash that changes on every read is itself a
+		// tell — real anti-fingerprinting noise is deterministic per session.
+		const seed = (Math.random() * 1e9) >>> 0;
+		// Deterministic jitter generator seeded from a base value.
+		const makeJitter = (base) => {
+			let lcg = base >>> 0;
+			return () => {
+				lcg = (lcg * 1664525 + 1013904223) >>> 0;
+				return (lcg % 3) - 1; // -1, 0, or +1
+			};
+		};
+
+		// Canvas 2D: perturb a handful of channels on readback. Reset the jitter to
+		// the session seed each call so repeated reads of the same canvas match.
+		const perturbImageData = (data) => {
+			const jit = makeJitter(seed);
+			for (let i = 0; i < data.length; i += 4 * 997 + 4) {
+				data[i] = Math.max(0, Math.min(255, data[i] + jit()));
+			}
+		};
+		const Ctx2DProto = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;
+		if (Ctx2DProto && Ctx2DProto.getImageData) {
+			const origGID = Ctx2DProto.getImageData;
+			const repl = function (...args) {
+				const res = origGID.apply(this, args);
+				try { perturbImageData(res.data); } catch (e) {}
+				return res;
+			};
+			repl.toString = () => origGID.toString();
+			Ctx2DProto.getImageData = repl;
+		}
+		// toDataURL: derive the PNG from a perturbed copy of the pixels so the
+		// output is stable per session AND doesn't mutate the visible canvas
+		// (drawing into the live canvas each call would double-perturb).
+		const CanvasProto = window.HTMLCanvasElement && HTMLCanvasElement.prototype;
+		if (CanvasProto && CanvasProto.toDataURL && Ctx2DProto) {
+			const origTDU = CanvasProto.toDataURL;
+			const repl = function (...args) {
+				try {
+					const w = this.width, h = this.height;
+					const src = this.getContext("2d");
+					if (src && w && h) {
+						// getImageData is already shimmed above -> perturbed + stable.
+						const img = src.getImageData(0, 0, w, h);
+						const tmp = document.createElement("canvas");
+						tmp.width = w; tmp.height = h;
+						const tctx = tmp.getContext("2d");
+						tctx.putImageData(img, 0, 0);
+						return origTDU.apply(tmp, args);
+					}
+				} catch (e) {}
+				return origTDU.apply(this, args);
+			};
+			repl.toString = () => origTDU.toString();
+			CanvasProto.toDataURL = repl;
+		}
+
+		// AudioContext: perturb the float samples so the audio fingerprint moves off
+		// the headless baseline. Deterministic per session (reset jitter each call).
+		// Scale ~1e-7 — far below audible/functional relevance.
+		const AudioBufProto = window.AudioBuffer && AudioBuffer.prototype;
+		if (AudioBufProto && AudioBufProto.getChannelData) {
+			const origGCD = AudioBufProto.getChannelData;
+			const repl = function (...args) {
+				const out = origGCD.apply(this, args);
+				try {
+					const jit = makeJitter(seed);
+					for (let i = 0; i < out.length; i += 1000) {
+						out[i] = out[i] + jit() * 1e-7;
+					}
+				} catch (e) {}
+				return out;
+			};
+			repl.toString = () => origGCD.toString();
+			AudioBufProto.getChannelData = repl;
+		}
+		const AnalyserProto = window.AnalyserNode && AnalyserNode.prototype;
+		if (AnalyserProto && AnalyserProto.getFloatFrequencyData) {
+			const origFFD = AnalyserProto.getFloatFrequencyData;
+			const repl = function (array) {
+				origFFD.call(this, array);
+				try {
+					const jit = makeJitter(seed);
+					for (let i = 0; i < array.length; i += 100) {
+						array[i] = array[i] + jit() * 1e-4;
+					}
+				} catch (e) {}
+			};
+			repl.toString = () => origFFD.toString();
+			AnalyserProto.getFloatFrequencyData = repl;
+		}
 	})();`;
+}
+
+// --- Behavioral signals.
+// Freshly-loaded automated pages emit zero human interaction: no mouse movement,
+// no scroll, instant everything. Some anti-bot gates score this. We inject a
+// short, cheap sequence of human-ish mouse moves and small scroll wiggles after
+// load so the page sees *some* organic-looking interaction. Kept brief so it
+// doesn't slow ordinary fetches much.
+async function humanize(
+	// biome-ignore lint/suspicious/noExplicitAny: playwright page
+	page: any,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	const rand = (min: number, max: number) => min + Math.random() * (max - min);
+	try {
+		// A few mouse moves along a jittery path across the viewport.
+		let x = rand(100, 400);
+		let y = rand(100, 300);
+		const steps = 4 + Math.floor(rand(0, 3));
+		for (let i = 0; i < steps; i++) {
+			if (signal?.aborted) return;
+			x = Math.max(0, Math.min(1279, x + rand(-120, 220)));
+			y = Math.max(0, Math.min(799, y + rand(-80, 160)));
+			// Playwright interpolates intermediate points when steps>1.
+			await page.mouse.move(x, y, { steps: 3 + Math.floor(rand(0, 5)) });
+			await page.waitForTimeout(rand(40, 140));
+		}
+		// A couple of small scroll nudges (down a bit, maybe back up).
+		for (let i = 0; i < 2; i++) {
+			if (signal?.aborted) return;
+			await page.mouse.wheel(0, rand(120, 480));
+			await page.waitForTimeout(rand(120, 300));
+		}
+		await page.mouse.wheel(0, -rand(40, 160));
+	} catch (e) {
+		// Interaction is best-effort; never fail the fetch over it.
+	}
 }
 
 interface ExtractedItem {
@@ -274,6 +414,7 @@ interface FetchOptions {
 	timezone: string;
 	challengeWaitMs: number;
 	headed: boolean;
+	humanize: boolean;
 }
 
 interface FetchResult {
@@ -305,32 +446,58 @@ const BLOCK_MARKERS = [
 // Cloudflare / interstitial challenge markers. These are NOT permanent blocks:
 // the page runs JS and redirects to the real content once the check passes, so
 // we wait it out rather than retry-with-backoff.
+// IMPORTANT: challenge detection keys off the VISIBLE page (title + innerText),
+// never the raw HTML. Cloudflare uses a "403-then-redirect" pattern: it first
+// serves an interstitial (HTTP 403, title "Just a moment…", visible text
+// "Checking your browser…"), runs its JS fingerprint check, and — if the check
+// passes — redirects to the real content. Crucially, once cleared it *leaves its
+// challenge <script> tags in the DOM* (`challenge-platform`, `cf_chl_opt`,
+// `cf-chl`, `cf-browser-verification`). Those live in page.content() (raw HTML)
+// forever, so matching HTML would flag a fully-loaded page as still blocked —
+// a false positive. The interstitial's TITLE and VISIBLE TEXT, by contrast,
+// disappear the moment the real page renders, so they are the reliable signal.
 const CHALLENGE_MARKERS = [
 	"just a moment",
 	"checking your browser",
 	"checking if the site connection is secure",
-	"cf-browser-verification",
-	"cf_chl_opt",
-	"cf-chl",
-	"challenge-platform",
 	"enable javascript and cookies to continue",
+	"verifying you are human",
+	"needs to review the security of your connection",
 	"attention required! | cloudflare",
 ];
 
-function looksChallenge(title: string, body: string): boolean {
-	const hay = `${title}\n${body}`.toLowerCase();
+// title + VISIBLE text only (not raw HTML) — see note above.
+function looksChallenge(title: string, visibleText: string): boolean {
+	const hay = `${title}\n${visibleText}`.toLowerCase();
 	return CHALLENGE_MARKERS.some((m) => hay.includes(m));
 }
 
-function looksBlocked(status: number | null, body: string): boolean {
+// Also visible-text based (plus HTTP status). BLOCK_MARKERS are CAPTCHA /
+// verification phrases that a human would see rendered on the page.
+function looksBlocked(status: number | null, visibleText: string): boolean {
 	if (status === 403 || status === 429 || status === 503) return true;
-	const lower = body.toLowerCase();
+	const lower = visibleText.toLowerCase();
 	return BLOCK_MARKERS.some((m) => lower.includes(m));
 }
 
+// Read the page's visible text (what a human sees), used for all block/challenge
+// detection. Falls back to "" if the body isn't ready.
+async function visibleText(
+	// biome-ignore lint/suspicious/noExplicitAny: playwright page
+	page: any,
+): Promise<string> {
+	try {
+		return await page.evaluate(() => document.body?.innerText ?? "");
+	} catch {
+		return "";
+	}
+}
+
 // Wait for a Cloudflare-style interstitial to clear. The challenge page runs JS
-// then navigates to the real content; poll until the challenge markers are gone
-// (or timeout). Returns the final body once cleared, or the last body seen.
+// then navigates to the real content; poll until the visible challenge text is
+// gone (or timeout). Returns the final visible text once cleared, or the last
+// seen. Detection is on title + innerText so leftover CF scripts in the DOM of
+// the *cleared* page don't keep it looping (see note on CHALLENGE_MARKERS).
 async function waitOutChallenge(
 	// biome-ignore lint/suspicious/noExplicitAny: playwright page
 	page: any,
@@ -338,25 +505,27 @@ async function waitOutChallenge(
 	onProgress: (msg: string) => void,
 ): Promise<string> {
 	const deadline = Date.now() + timeoutMs;
-	let body = await page.content();
+	let text = await visibleText(page);
 	let title = await page.title();
 	let waited = 0;
-	while (looksChallenge(title, body) && Date.now() < deadline) {
+	while (looksChallenge(title, text) && Date.now() < deadline) {
 		onProgress(`Cloudflare challenge detected; waiting for it to clear (${waited}ms)...`);
 		try {
-			// Either the interstitial navigates away, or its DOM markers vanish.
+			// Wait until the visible interstitial text/title disappears (redirect to
+			// real content). Checks title + document.body.innerText, NOT innerHTML,
+			// so leftover challenge <script> tags don't defeat the wait.
 			await page.waitForFunction(
 				() => {
 					const t = (document.title || "").toLowerCase();
-					const h = (document.documentElement.innerHTML || "").toLowerCase();
+					const v = (document.body?.innerText || "").toLowerCase();
 					const markers = [
 						"just a moment",
 						"checking your browser",
-						"cf-browser-verification",
-						"cf_chl_opt",
-						"challenge-platform",
+						"checking if the site connection is secure",
+						"enable javascript and cookies to continue",
+						"verifying you are human",
 					];
-					return !markers.some((m) => t.includes(m) || h.includes(m));
+					return !markers.some((m) => t.includes(m) || v.includes(m));
 				},
 				{ timeout: 5000 },
 			);
@@ -364,10 +533,10 @@ async function waitOutChallenge(
 			// waitForFunction timed out this round; loop and re-check until deadline.
 		}
 		waited += 5000;
-		body = await page.content();
+		text = await visibleText(page);
 		title = await page.title();
 	}
-	return body;
+	return text;
 }
 
 async function yousoroFetch(
@@ -415,7 +584,6 @@ async function yousoroFetch(
 		const page = await context.newPage();
 
 		let status: number | null = null;
-		let body = "";
 		let blocked = false;
 		let attempt = 0;
 
@@ -429,19 +597,29 @@ async function yousoroFetch(
 			});
 			status = resp ? resp.status() : null;
 			await page.waitForTimeout(opts.waitMs);
-			body = await page.content();
 
-			// Cloudflare "Just a moment" interstitial: wait for it to auto-solve
-			// and navigate to the real page before deciding it's blocked. This is
-			// the common case where JS runs fine but the first paint is the check.
+			// Emit some human-ish mouse/scroll interaction before reading the page,
+			// so behavior-scoring gates don't see a zero-interaction session.
+			if (opts.humanize) await humanize(page, signal);
+
+			// Detection uses VISIBLE text (title + innerText), never raw HTML — see
+			// the note on CHALLENGE_MARKERS about Cloudflare's 403-then-redirect
+			// leaving challenge <script> tags in the DOM of the cleared page.
 			let title = await page.title();
-			if (looksChallenge(title, body)) {
-				body = await waitOutChallenge(page, opts.challengeWaitMs, onProgress);
+			let vtext = await visibleText(page);
+
+			// Cloudflare "403-then-redirect" interstitial: it serves the challenge
+			// first (often HTTP 403), runs its JS fingerprint check, and redirects
+			// to the real page if we pass. Wait for the visible interstitial to
+			// clear before deciding it's blocked. If it clears, the initial 403 was
+			// just the challenge gate, so treat the outcome as 200.
+			if (looksChallenge(title, vtext)) {
+				vtext = await waitOutChallenge(page, opts.challengeWaitMs, onProgress);
 				title = await page.title();
-				status = looksChallenge(title, body) ? status : 200;
+				status = looksChallenge(title, vtext) ? status : 200;
 			}
 
-			blocked = looksBlocked(status, body) || looksChallenge(title, body);
+			blocked = looksBlocked(status, vtext) || looksChallenge(title, vtext);
 
 			if (!blocked) break;
 
@@ -555,6 +733,14 @@ const PARAMS = Type.Object({
 				"and clears more Cloudflare challenges. Slower to start. Default false.",
 		}),
 	),
+	humanize: Type.Optional(
+		Type.Boolean({
+			description:
+				"Emit brief human-ish mouse movement and scroll before reading the page, " +
+				"so behavior-scoring anti-bot gates don't see a zero-interaction session. " +
+				"Adds ~1s. Default true; set false for the fastest possible fetch.",
+		}),
+	),
 	max_chars: Type.Optional(
 		Type.Number({
 			description: "Truncate returned page text to this many characters. Default 8000.",
@@ -631,6 +817,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 						timezone: "Asia/Tokyo",
 						challengeWaitMs: params.challenge_wait_ms ?? 20000,
 						headed: params.headed ?? false,
+						humanize: params.humanize ?? true,
 					},
 					signal,
 					onProgress,

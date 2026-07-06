@@ -62,15 +62,78 @@ For each fetch it:
      and `WebGL2RenderingContext.prototype` so
      `UNMASKED_VENDOR_WEBGL`/`UNMASKED_RENDERER_WEBGL` report a real Intel Mac
      GPU instead of SwiftShader, keeping a native-looking `toString()`
+   - adds **per-session canvas + audio fingerprint noise** (see below)
    - spoofs the permissions/notifications query
-4. Navigates, waits `wait_ms`, then **waits out Cloudflare interstitials**
-   ("Just a moment", "Checking your browser", `challenge-platform`, …): these
-   run JS then redirect, so it polls until the challenge markers vanish (up to
-   `challenge_wait_ms`) instead of treating the first paint as a block.
-5. Treats real blocks (403/429/503, or CAPTCHA/verification markers) as
+4. Navigates, waits `wait_ms`, then (unless `humanize=false`) emits brief
+   **human-ish mouse movement and scroll** so behavior-scoring gates don't see a
+   zero-interaction session (see below).
+5. **Waits out Cloudflare interstitials** — see [The 403-then-redirect
+   pattern](#the-403-then-redirect-pattern) below.
+6. Treats real blocks (403/429/503, or CAPTCHA/verification markers) as
    `blocked` and retries with backoff up to `max_attempts`.
-6. Optionally scrolls for lazy/infinite-scroll feeds and extracts elements by
+7. Optionally scrolls for lazy/infinite-scroll feeds and extracts elements by
    CSS selector.
+
+### The 403-then-redirect pattern
+
+Many Cloudflare-fronted sites (Stack Overflow, Stack Exchange, GitLab, …) do
+**not** hard-block a headless browser. Instead they use a *403-then-redirect*
+gate:
+
+1. The first response is the **interstitial**, usually **HTTP 403**, with title
+   `"Just a moment…"` and visible text like *"Checking your browser…"* /
+   *"Verifying you are human…"*.
+2. Cloudflare's JavaScript runs its fingerprint checks in that page.
+3. **If the fingerprint passes**, it redirects/renders the **real content** —
+   same URL, now a normal page. If it fails, you stay on the interstitial (or
+   get a CAPTCHA).
+
+So an initial `403` is *not* a definitive block on these sites — it's the
+challenge gate. `yousoro_browse` waits for the interstitial to clear (up to
+`challenge_wait_ms`, default 20s); if it does, the initial 403 is treated as a
+`200`, because the fingerprint masking (Google-Chrome UA, real WebGL GPU,
+`webdriver:false`, canvas/audio noise, human-ish interaction) got us through.
+
+**The critical detail — detect on VISIBLE text, not raw HTML.** When the
+challenge clears, Cloudflare **leaves its challenge `<script>` tags in the DOM**
+(`challenge-platform`, `cf_chl_opt`, `cf-chl`, `cf-browser-verification`). Those
+strings persist in `page.content()` (raw HTML) on the *fully loaded, real* page.
+Early versions matched against raw HTML and so reported a perfectly good page as
+`blocked: true` — a false positive. The fix: all block/challenge detection keys
+off **`document.title` + `document.body.innerText`** (what a human actually
+sees), which flips to the real page the instant it renders and never contains
+the leftover script markers. See `looksChallenge` / `visibleText` and the note
+on `CHALLENGE_MARKERS` in `index.ts`.
+
+This is why Stack Overflow, Stack Exchange, GitLab, Bing, WebCrawler, and Yandex
+now succeed from the sandbox: they use fingerprint-gated 403-then-redirect, which
+the masking clears — as opposed to CAPTCHA/managed challenges (PyPI, Mojeek,
+`find.4chan.org`), which don't.
+
+### Canvas + audio fingerprint noise
+
+Anti-bot systems hash a canvas render or an `AudioContext` buffer into a stable
+device fingerprint. Two problems for the sandbox: headless SwiftShader produces a
+*known* fingerprint that flags automation, and a perfectly identical fingerprint
+across "different users" from one image is itself suspicious.
+
+The init script shims `CanvasRenderingContext2D.getImageData`,
+`HTMLCanvasElement.toDataURL`, `AudioBuffer.getChannelData`, and
+`AnalyserNode.getFloatFrequencyData` to inject an imperceptible perturbation
+(±1 on a few pixel channels; ~1e-7 on audio samples). Key property: all
+perturbations derive from **one random seed per page load and reset to it before
+each read**, so the fingerprint is *stable within a session* but off the known
+headless baseline. (A hash that changes on every read is itself a tell — that's
+what naive anti-fingerprinting does.) `toString()` on each shim returns the
+original's, so the patched methods still look native.
+
+### Human-ish interaction (`humanize`)
+
+After load, the tool moves the mouse along a short jittery path and does a couple
+of small scroll nudges before reading the page, so behavior-scoring gates see
+*some* organic interaction instead of a zero-interaction session. It's
+best-effort (never fails the fetch) and adds ~1–2s. Set `humanize=false` for the
+fastest possible fetch.
 
 ### Parameters
 
@@ -135,9 +198,16 @@ started working from the sandbox; the skill was updated to match:
 | GitLab | Cloudflare "Just a moment" 403 | works |
 | WebCrawler | Cloudflare 403 | works |
 | Yandex | SmartCaptcha | works |
+| Stack Overflow | 403-then-redirect (was false-flagged blocked) | works |
+| Stack Exchange | 403-then-redirect (was false-flagged blocked) | works |
 | Mojeek | ALTCHA CAPTCHA | still blocked — now **correctly reported** `blocked:true` |
 | PyPI | image CAPTCHA | still blocked |
 | find.4chan.org | Cloudflare managed challenge | still blocked |
+
+Stack Overflow / Stack Exchange are the case that motivated the visible-text
+detection fix: they *did* clear the challenge, but leftover CF scripts in the
+raw HTML made the old detector report them blocked. See
+[The 403-then-redirect pattern](#the-403-then-redirect-pattern).
 
 ## Editing / rebuilding
 

@@ -120,7 +120,8 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 
 - ✅ **Wikipedia**——`https://en.wikipedia.org/w/index.php?search=<q>` ——背景、定義、引源之樞。
 - ✅ **Lobsters**——`https://lobste.rs/search?q=<q>&what=stories&order=relevance` ——技術向論壇，優質鏈。
-- ✅ **Stack Exchange API**——`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=<q>&site=stackoverflow` ——返 JSON，技術 QA。
+- ✅ **Stack Exchange API**——`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=<q>&site=stackoverflow` ——返 JSON，技術 QA。**首選**（無 challenge、潔）。
+- ✅ **Stack Overflow／Stack Exchange 網頁**——`https://stackoverflow.com/questions?tab=Newest`、`https://stackexchange.com/`——**今亦通**。彼行 Cloudflare「先 403 後轉」之關：首返 403 挑戰頁，指紋過則轉真頁。yousoro_browse 候其自解，故通。（然結構化查詢仍以上之 API 為佳。）
 - ❌ **Marginalia**——`search.marginalia.nu` 超時（不可靠）。
 
 **JSON／API 端點（均試通，優於爬 HTML）：**
@@ -132,7 +133,7 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 - ✅ **npm registry**——`https://registry.npmjs.org/-/v1/search?text=<q>&size=<n>` ——返 JSON，包發現。
 - ❌ **PyPI 搜索**——`pypi.org/search` 遭 CAPTCHA（Client Challenge）。已知包名則用 `https://pypi.org/pypi/<name>/json`。
 
-通則：多數 Cloudflare「Just a moment」瞬擋今由 yousoro_browse 自過（Google Chrome 指紋、真 GPU、候其自解）。然**圖形 CAPTCHA（PyPI、Mojeek）與最硬之 managed challenge（find.4chan.org）仍不得過**——此非指紋之事，乃須解謎或真 residential IP。若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
+通則：多數 Cloudflare「Just a moment」瞬擋今由 yousoro_browse 自過（Google Chrome 指紋、真 GPU、候其自解）。此類站行「**先 403 後轉**」之關——首返 403 挑戰頁，指紋過則轉真頁；故初之 403 非真擋，工具候其自解，過則以 200 論。然**圖形 CAPTCHA（PyPI、Mojeek）與最硬之 managed challenge（find.4chan.org）仍不得過**——此非指紋之事，乃須解謎或真 residential IP。若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
 
 2. **讀且集。**每頁：
    - 讀頁文。**若已答，止而報**——引其 URL。
