@@ -1,9 +1,16 @@
 ---
 name: web-search
 description: >-
-  以 yousoro_browse 於 pa 匣中搜網、讀頁，循善鏈數跳以得答。凡用戶命汝上網查物、研一題、
-  尋文獻／文檔／新聞、驗網上一事，或平常 fetch 遭擋（403／429／503）、或所得之頁無答，
-  皆用之。含集鏈（extract="a" extract_attr="href"）、以錨字評鏈、有界廣搜（BFS）勿漫遊。
+  Search the web, fetch a URL, read a web page, look something up online, or
+  verify a fact — in the pa sandbox. USE THE yousoro_browse TOOL, never curl /
+  wget / fetch / ad-hoc Playwright: the sandbox IP is a datacenter IP and gets
+  blocked (403/429/503) by search engines, Reddit, and Cloudflare-fronted sites,
+  so curl wastes attempts and fails. yousoro_browse masks the browser
+  fingerprint, waits out Cloudflare challenges, and retries. Trigger whenever a
+  fetch is blocked, a page has no answer, or you need to research a topic / find
+  docs / news / papers. Covers link harvesting (extract="a" extract_attr="href")
+  and bounded BFS across pages.
+  以 yousoro_browse 於 pa 匣中搜網、讀頁，勿用 curl／wget／fetch。
 ---
 
 # web-search

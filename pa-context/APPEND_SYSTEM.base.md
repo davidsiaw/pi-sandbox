@@ -14,8 +14,11 @@
   故裝棄物無忌，不污主機。
 - 存於主機者：所掛之工（居其真徑）、`~/.pi/agent/skills` 與 `~/.pi/agent/extensions`、
   及 mise 之窖。汝所著技與延，皆歸主機。
-- 覽器之術：Playwright 與 Chromium 預居 `/opt/ms-playwright`。
-  啟 Chromium 須 `args: ['--no-sandbox']`。
+- **上網之則（首要，省汝大時）**：凡取網頁、搜網、讀 URL、驗網上一事——
+  **恆用 `yousoro_browse` 具**，勿以 `curl`／`wget`／`fetch`／臨時 Playwright 試之。
+  匣之 IP 乃機房 IP，Reddit、Cloudflare 之站、Google／Bing 等搜索引擎皆擋裸 fetch，
+  汝以 curl 必敗而空耗數試。yousoro_browse 已掩指紋、候 challenge 自解、遇擋重試，
+  一擊而中。（其詳見 web-search 技。）Chromium 若自啟，須 `args: ['--no-sandbox']`。
 - 無詞之 `sudo` 在，鑄時可補缺庫。慎用，其變朝生暮死。
 - 欲知今夕何夕，速行 `date` 一觀，勿臆。
 
