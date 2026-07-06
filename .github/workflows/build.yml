@@ -96,6 +96,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Build amd64 image for testing (load locally)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            PI_VERSION=${{ needs.check.outputs.pi_version }}
+          tags: davidsiaw/pi-sandbox:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: sh smoketest.sh
+
       - name: Build and push (both arches)
         uses: docker/build-push-action@v7
         with:

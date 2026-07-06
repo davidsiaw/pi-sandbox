@@ -88,13 +88,17 @@ Triggers:
 
 ### The build job
 
-Runs only when `should_build == 'true'`. Builds both arches with
-`--build-arg PI_VERSION=<version>` so the image pins exactly that pi release,
-and pushes two tags: `:latest` and `:<version>`. The `:<version>` tag is what
-the next scheduled check looks for, so each pi release is built at most once.
+Runs only when `should_build == 'true'`. It first builds a single-arch
+(`linux/amd64`) image, loads it locally, and runs `smoketest.sh` against it.
+Only if the smoke test passes does it build both arches with
+`--build-arg PI_VERSION=<version>` and push two tags: `:latest` and
+`:<version>`. (Multi-arch images can't be loaded locally, hence the separate
+load-and-test build; the buildx cache makes the second build cheap.) The
+`:<version>` tag is what the next scheduled check looks for, so each pi release
+is built at most once.
 
 Steps: checkout → setup QEMU → setup buildx → log in to Docker Hub →
-build-push.
+build+load amd64 → smoke test → build-push both arches.
 
 ### Required repository secrets
 

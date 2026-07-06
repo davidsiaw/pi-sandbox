@@ -8,10 +8,6 @@ ARG PI_NODE_MAJOR=22
 ENV PI_NODE_MAJOR=${PI_NODE_MAJOR}
 COPY scripts/install-node-system.sh /tmp/install-node-system.sh
 RUN bash /tmp/install-node-system.sh && rm /tmp/install-node-system.sh
-ARG PI_VERSION=latest
-ENV PI_VERSION=${PI_VERSION}
-COPY scripts/install-pi.sh /tmp/install-pi.sh
-RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 COPY scripts/install-browser.sh /tmp/install-browser.sh
@@ -37,6 +33,11 @@ COPY pa-extensions /opt/pa/extensions
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
+
+ARG PI_VERSION=latest
+ENV PI_VERSION=${PI_VERSION}
+COPY scripts/install-pi.sh /tmp/install-pi.sh
+RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
