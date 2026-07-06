@@ -8,21 +8,35 @@
  * fingerprint-masked headless Chromium (Playwright), with retry + backoff to
  * defeat bot/rate-limit blocks (e.g. Reddit's "blocked by network security").
  *
- * Why: plain headless Chromium leaks automation signals (navigator.webdriver,
- * HeadlessChrome UA token, missing plugins) and many sites 403 it. This tool
- * spoofs those signals, waits out Cloudflare "Just a moment" interstitial
- * challenges (which run JS then redirect to the real page), and retries
- * transient blocks, so page viewing works reliably from the pa sandbox.
+ * Why: plain headless Chromium leaks automation signals and many sites 403 it.
+ * This tool masks the JavaScript/DOM fingerprint layer and waits out Cloudflare
+ * "403-then-redirect" challenges so page viewing works reliably from the pa
+ * sandbox. Masking, in layers:
+ *   - navigator.webdriver = false, plugins/languages populated, window.chrome
+ *   - navigator.userAgentData / Sec-CH-UA / UA string all claim Google Chrome
+ *     at the real bundled-engine major (internally consistent)
+ *   - coherent macOS hardware (hardwareConcurrency, deviceMemory, platform,
+ *     screen geometry, devicePixelRatio)
+ *   - WebGL UNMASKED_* reports a real Intel GPU instead of SwiftShader
+ *   - per-session canvas + audio fingerprint noise (deterministic within a run)
+ *   - brief human-ish mouse/scroll interaction before reading (opt-out)
+ *   - optional headed mode behind Xvfb
  *
- * Note: JS already runs in Chromium; "Just a moment" is a Cloudflare challenge,
- * not a JS-disabled problem. The fix is to wait for the challenge to auto-solve
- * and navigate, not to enable JS. Hard managed challenges (Turnstile) may still
- * fail against stock headless Chromium — those need a patched/undetected build
- * or a real Chrome channel in headed mode.
+ * Notes:
+ *   - JS already runs in Chromium; "Just a moment" is a Cloudflare challenge,
+ *     not a JS-disabled problem. The fix is to wait for it to auto-solve and
+ *     redirect. Challenge/block detection keys off VISIBLE text (title +
+ *     innerText), never raw HTML, because Cloudflare leaves its challenge
+ *     <script> tags in the DOM of the cleared page (see CHALLENGE_MARKERS).
+ *   - The CDP Runtime.enable leak is already fixed upstream in the bundled
+ *     Playwright, so no CDP patch is applied here.
+ *   - Not addressed: TLS/JA3 fingerprint and IP reputation (network layer,
+ *     unreachable from page JS). Image CAPTCHAs and the hardest managed
+ *     challenges are reported as blocked so the caller can move on.
  *
  * Playwright is not bundled; it is resolved from the global install baked into
  * the pa image (/usr/lib/node_modules/playwright), with the Chromium browsers
- * at /opt/ms-playwright.
+ * at /opt/ms-playwright. See docs/yousoro-browsing.md.
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
@@ -287,13 +301,11 @@ function makeYousoroInitScript(major: string): string {
 		// produces a KNOWN fingerprint that flags automation, and (b) a perfectly
 		// stable hash across "different users" from one image is itself suspicious.
 		// We inject a tiny per-session deterministic perturbation: enough to move
-		// off the known headless hash, stable within a session so it doesn't look
-		// like anti-fingerprinting noise (which is itself a tell when it changes
-		// every read). A single random seed per page load drives all offsets.
-		// One random seed per page load. All perturbations derive from it and RESET
-		// to it before each read, so the same input always yields the same output
-		// within a session (stable). A hash that changes on every read is itself a
-		// tell — real anti-fingerprinting noise is deterministic per session.
+		// off the known headless hash, but stable WITHIN a session. All offsets
+		// derive from one random seed per page load and RESET to it before each
+		// read, so the same input always yields the same output. (A hash that
+		// changes on every read is itself a tell — that's what naive
+		// anti-fingerprinting does.)
 		const seed = (Math.random() * 1e9) >>> 0;
 		// Deterministic jitter generator seeded from a base value.
 		const makeJitter = (base) => {
@@ -778,9 +790,10 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 		name: "yousoro_browse",
 		label: "Yousoro Browse",
 		description:
-			"Fetch a web page with a fingerprint-masked headless Chromium (spoofed " +
-			"navigator.webdriver, real UA/plugins/timezone), wait out Cloudflare " +
-			"\"Just a moment\" interstitial challenges, and retry-with-backoff on " +
+			"Fetch a web page with a fingerprint-masked headless Chromium (Google " +
+			"Chrome UA + userAgentData, real WebGL GPU, coherent macOS hardware, " +
+			"canvas/audio noise, human-ish interaction), wait out Cloudflare " +
+			"\"Just a moment\" 403-then-redirect challenges, and retry-with-backoff on " +
 			"bot/rate-limit blocks. Use this to read pages that reject plain headless " +
 			"browsers with 403/429/503 (e.g. Reddit, Cloudflare-fronted sites). Returns " +
 			"page text, and optionally innerText (and an attribute such as href) of " +
