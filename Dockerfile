@@ -36,6 +36,7 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 ARG PI_VERSION=latest
 ENV PI_VERSION=${PI_VERSION}
+ENV PI_RESUME_COMMAND=pa
 COPY scripts/install-pi.sh /tmp/install-pi.sh
 RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 

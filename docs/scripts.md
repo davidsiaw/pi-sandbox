@@ -69,6 +69,16 @@ working even when a project switches Node via mise and even when the mise data
 dir is replaced by a mounted cache volume at runtime. CI pins `PI_VERSION` to an
 exact release so each image is reproducible and tagged with its pi version.
 
+After install it **patches pi's resume-command output**. Vanilla pi prints
+`pi --session-dir /... --session <id>` when it exits; inside the sandbox that
+command wouldn't drive the container. The script edits
+`dist/modes/interactive/interactive-mode.js` so `formatResumeCommand` reads the
+command name from `PI_RESUME_COMMAND` (set to `pa` via the Dockerfile `ENV`) and
+skips the `--session-dir` arg (the `pa` launcher already supplies it from
+`$PWD`). Result: `pa --session <id>`, runnable from the host. The patch matches
+two exact anchors, is idempotent (safe to re-run), and errors loudly if the
+anchors move in a future pi release. See [usage.md](usage.md#resuming-a-session).
+
 ## scripts/install-browser.sh (root)
 
 Installs the Playwright CLI globally (pinned so browser + CLI versions stay in

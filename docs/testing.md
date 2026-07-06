@@ -34,6 +34,8 @@ cache volume, exercising the real runtime path a user would hit:
 | cache volume persists node@20 | the installed runtime survives across runs |
 | passwordless sudo works | the agent can `sudo apt install` during a task |
 | settings seeded with current version (no changelog) | `settings.json` gets `lastChangelogVersion` = installed pi version, so pi doesn't replay its changelog |
+| PI_RESUME_COMMAND=pa in image | the resume command name env is set to `pa` |
+| resume-command patch applied to pi | pi's `formatResumeCommand` reads `PI_RESUME_COMMAND` and drops `--session-dir`, so it prints `pa --session <id>` |
 | baked APPEND_SYSTEM.base.md present | container guidance is baked into the image |
 | baked skill present | a skill is baked at `/opt/pa/skills` |
 | baked extension present | an extension is baked at `/opt/pa/extensions` |

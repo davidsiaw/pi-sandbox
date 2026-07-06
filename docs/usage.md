@@ -45,6 +45,27 @@ on the host (so it's owned by you) and launches pi with
 real path, sessions persist on the host and survive the container. Add
 `.pi-sessions/` to your project's `.gitignore` if you don't want them tracked.
 
+#### Resuming a session
+
+When pi exits it prints a "To resume this session" line. In the sandbox this is
+rewritten to use the `pa` launcher instead of a bare `pi` command, so it works
+from the host:
+
+```
+To resume this session: pa --session <id>
+```
+
+Run that from the **same project directory** and it resumes — `pa` re-mounts
+the project at its real path and passes `--session-dir "$PWD/.pi-sessions"`, so
+the session id resolves to the file on the host. Any extra args you give `pa`
+are forwarded straight to `pi`.
+
+How it works: the image sets `PI_RESUME_COMMAND=pa`, and `install-pi.sh` patches
+pi's `formatResumeCommand` so that (a) the printed command name comes from
+`PI_RESUME_COMMAND`, and (b) the `--session-dir` argument is omitted (the
+launcher already supplies it). The patch is idempotent and only affects the
+copy of pi baked into the image; your host pi is untouched.
+
 ### What is deliberately *not* mounted
 
 - other `~/.pi/` extension state (files an extension keeps outside

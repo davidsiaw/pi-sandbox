@@ -66,6 +66,11 @@ ver="$(run 'cat /usr/lib/node_modules/@earendil-works/pi-coding-agent/package.js
 run 'cat "$HOME/.pi/agent/settings.json"' | grep -q "\"lastChangelogVersion\": \"${ver}\"" \
   && pass "settings seeded with current version (no changelog)" || fail "settings not seeded with pi version"
 
+run 'echo "$PI_RESUME_COMMAND"' | grep -q '^pa$' \
+  && pass "PI_RESUME_COMMAND=pa in image" || fail "PI_RESUME_COMMAND not set to pa"
+run 'grep -q "process.env.PI_RESUME_COMMAND || APP_NAME" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo PATCHED' | grep -q PATCHED \
+  && pass "resume-command patch applied to pi" || fail "resume-command patch missing"
+
 run 'test -s /opt/pa/APPEND_SYSTEM.base.md && echo BASE_OK' | grep -q BASE_OK \
   && pass "baked APPEND_SYSTEM.base.md present" || fail "baked base guidance missing"
 
