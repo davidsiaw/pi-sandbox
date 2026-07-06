@@ -29,6 +29,28 @@ lives in `scripts/setup-home.sh`, which chmods `~/.cache`, `~/.config`,
 order, make sure `setup-home.sh` runs **after** anything that creates those
 directories (e.g. the mise install step). Rebuild and re-run `smoketest.sh`.
 
+## `npm error EACCES` / `mkdir /home/agent/.npm/_cacache` when pi installs an extension
+
+Symptom (e.g. installing an extension like `pi-caveman`):
+
+```
+npm error code EACCES
+npm error path /home/agent/.npm/_cacache
+npm error Your cache folder contains root-owned files ...
+Error: npm install pi-caveman --prefix /home/agent/.pi/agent/npm ... failed with code 1
+```
+
+Cause: pi installs extensions with npm at runtime as the arbitrary host uid,
+writing to `~/.npm` (cache) and `~/.pi/agent/npm` (prefix). If a build step ran
+npm **as root** after `setup-home.sh` did its `0777` chmod, it left those dirs
+root-owned, so the runtime uid can't write them.
+
+Fix: `install-pi.sh` (the last root step) removes and recreates `~/.npm` and
+`~/.pi/agent/npm` and chmods them `0777` at the end, after any root npm use.
+If you add a build step that runs npm as root *after* `install-pi.sh`, re-open
+those dirs again or you'll reintroduce this. Rebuild and re-run `smoketest.sh`
+(the "npm dirs writable" check guards this).
+
 ## Files created in the project have the wrong owner (Linux)
 
 The `pa` launcher runs the container as `--user $(id -u):$(id -g)`, so mounted

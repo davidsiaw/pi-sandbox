@@ -66,6 +66,9 @@ ver="$(run 'cat /usr/lib/node_modules/@earendil-works/pi-coding-agent/package.js
 run 'cat "$HOME/.pi/agent/settings.json"' | grep -q "\"lastChangelogVersion\": \"${ver}\"" \
   && pass "settings seeded with current version (no changelog)" || fail "settings not seeded with pi version"
 
+run 'touch "$HOME/.npm/wtest" "$HOME/.pi/agent/npm/wtest" 2>&1 && echo NPM_WRITABLE' | grep -q NPM_WRITABLE \
+  && pass "npm dirs writable (pi can install extensions)" || fail "npm dirs not writable for arbitrary uid"
+
 run 'echo "$PI_RESUME_COMMAND"' | grep -q '^pa$' \
   && pass "PI_RESUME_COMMAND=pa in image" || fail "PI_RESUME_COMMAND not set to pa"
 run 'grep -q "process.env.PI_RESUME_COMMAND || APP_NAME" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo PATCHED' | grep -q PATCHED \

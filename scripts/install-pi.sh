@@ -33,3 +33,7 @@ if (src.includes(appNamePatched) && src.includes(guardPatched)) {
 PATCH
 
 pi --version || true
+
+rm -rf /home/agent/.npm
+mkdir -p /home/agent/.npm /home/agent/.pi/agent/npm
+chmod -R 0777 /home/agent/.npm /home/agent/.pi

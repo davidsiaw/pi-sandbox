@@ -79,6 +79,13 @@ skips the `--session-dir` arg (the `pa` launcher already supplies it from
 two exact anchors, is idempotent (safe to re-run), and errors loudly if the
 anchors move in a future pi release. See [usage.md](usage.md#resuming-a-session).
 
+Finally, because this step is the **last root step** and ran npm as root (with
+`HOME=/home/agent`), it removes and recreates `~/.npm` and `~/.pi/agent/npm`
+`0777` at the end. pi installs extensions with npm at runtime as the arbitrary
+host uid, writing to those dirs; leaving them root-owned causes `EACCES` (see
+[troubleshooting.md](troubleshooting.md)). Any root npm use added *after* this
+step must reopen them again.
+
 ## scripts/install-browser.sh (root)
 
 Installs the Playwright CLI globally (pinned so browser + CLI versions stay in
