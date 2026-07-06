@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 COPY scripts/install-system-deps.sh /tmp/install-system-deps.sh
 RUN bash /tmp/install-system-deps.sh && rm /tmp/install-system-deps.sh

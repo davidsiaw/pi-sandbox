@@ -5,7 +5,9 @@ How the image is assembled and why each decision was made. Read alongside the
 
 ## Base image
 
-`debian:bookworm-slim`. Chosen over Alpine because Ruby and Python are compiled
+`debian:trixie-slim` (current Debian stable, glibc 2.41 — mise's prebuilt binary
+now requires glibc ≥ 2.38, which the older bookworm's 2.36 does not satisfy).
+Chosen over Alpine because Ruby and Python are compiled
 from source by mise, and glibc (Debian) avoids the musl-related build pain that
 Alpine introduces. Slim keeps the base small; we add only what we need.
 
