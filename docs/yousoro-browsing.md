@@ -7,7 +7,7 @@ The image bakes a browsing extension, `pa-yousoro-browse`, that registers a
 `yousoro_browse` tool. It fetches a page with a **fingerprint-masked Chromium**
 (Playwright), waits out Cloudflare interstitial challenges, and retries
 transient blocks — so the agent can read pages that reject plain headless
-browsers (403/429/503) from the sandbox's datacenter IP.
+browsers (403/429/503) from the sandbox's egress IP.
 
 - Extension source: `pa-extensions/pa-yousoro-browse/index.ts`
 - Baked at `/opt/pa/extensions/pa-yousoro-browse`, loaded additively by `pa`
@@ -182,7 +182,7 @@ and direct probes, from the sandbox:
 
 - **TLS/JA3 fingerprint** — Chromium's handshake still differs from real Chrome;
   it's a network-layer signal unreachable from page JS.
-- **IP reputation** — the sandbox egresses from a datacenter IP.
+- **IP reputation** — the sandbox egresses from whatever IP Docker resolves (home/ISP on macOS, datacenter on cloud).
 - **Image CAPTCHAs** (e.g. PyPI) and the **hardest managed challenges** (e.g.
   `find.4chan.org`) — need a solver or a residential IP, not a better
   fingerprint.

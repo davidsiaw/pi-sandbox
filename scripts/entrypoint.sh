@@ -16,4 +16,8 @@ if [ -x /usr/local/bin/seed-settings.sh ]; then
   /usr/local/bin/seed-settings.sh || true
 fi
 
+if [ -x /usr/local/bin/seed-trust.sh ]; then
+  /usr/local/bin/seed-trust.sh || true
+fi
+
 exec "$@"

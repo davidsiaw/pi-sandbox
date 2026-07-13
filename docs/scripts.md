@@ -128,7 +128,8 @@ Runs as the arbitrary runtime uid. If that uid has no `/etc/passwd` entry
 (common — many tools misbehave without one), it appends a passwd entry pointing
 at the world-writable HOME, plus a matching `/etc/shadow` entry (the `*`
 password field means no password login; sudo is NOPASSWD anyway). Then it runs
-the APPEND_SYSTEM merge and `exec`s the requested command.
+the APPEND_SYSTEM merge, the settings seed, and the trust seed, and `exec`s the
+requested command.
 
 ## scripts/seed-settings.sh
 
@@ -140,6 +141,19 @@ Runs from the entrypoint as the runtime uid. Writes a writable
 the host `settings.json` can't be written to (mounted read-only), so pi could
 never persist the seen version itself. The host file is never modified. See
 [usage.md](usage.md).
+
+## scripts/seed-trust.sh
+
+Runs from the entrypoint as the runtime uid. **Generates** a writable
+`~/.pi/agent/trust.json` that pre-trusts the current project directory:
+`{ "<realpath of pwd>": true }`. The project is bind-mounted at its real host
+path and the container's workdir is that path, so `pwd` (canonicalized with
+`realpathSync`, matching pi's own `canonicalizePath`) is the exact key pi looks
+up. The host `trust.json` is **not mounted** — pi persists trust by writing the
+file, and a read-only mount makes "Trust" fail with `EROFS`. Generating a
+pre-trusted, writable copy means pi never prompts or writes, and the host file
+is never touched. (The launcher also passes `pi --approve` as belt-and-braces.)
+See [usage.md](usage.md#project-trust).
 
 ## scripts/merge-append-system.sh
 

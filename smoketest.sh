@@ -10,6 +10,7 @@ MISE_MOUNT="/home/agent/.local/share/mise"
 
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; FAILED=1; }
+note() { printf '  \033[36mNOTE\033[0m  %s\n' "$1"; }
 FAILED=0
 
 cleanup() {
@@ -42,9 +43,15 @@ echo "$out" | grep -q 'HOME_WRITABLE'  && pass "HOME is writable"               
 
 run 'pi --version'         | grep -Eq '^[0-9]+\.[0-9]+' && pass "pi present"         || fail "pi missing"
 run 'node --version'       | grep -q '^v'                && pass "node present"       || fail "node missing"
-run 'mise --version'       | grep -Eq '[0-9]{4}\.'       && pass "mise present"       || fail "mise missing"
+run 'command -v mise >/dev/null 2>&1 && echo MISE_OK' | grep -q MISE_OK && pass "mise present" || fail "mise missing"
 run 'playwright --version' | grep -qi 'version'          && pass "playwright present" || fail "playwright missing"
 run 'ls /opt/ms-playwright'| grep -q 'chromium'          && pass "chromium present"   || fail "chromium missing"
+
+# Versions, informational only — not asserted (we only care the tools exist).
+note "pi        $(run 'pi --version 2>/dev/null'         | head -1)"
+note "node      $(run 'node --version 2>/dev/null'       | head -1)"
+note "mise      $(run 'mise --version 2>/dev/null'       | head -1)"
+note "playwright $(run 'playwright --version 2>/dev/null' | head -1)"
 
 out="$(run 'mkdir -p /tmp/p && cd /tmp/p && echo 3.3.5 > .ruby-version; ruby -v 2>&1 || true')"
 echo "$out" | grep -qi 'command not found' \
@@ -65,6 +72,18 @@ run 'sudo -n true 2>&1 && echo SUDO_OK' | grep -q SUDO_OK \
 ver="$(run 'cat /usr/lib/node_modules/@earendil-works/pi-coding-agent/package.json' | grep -oE '"version": *"[^"]+"' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
 run 'cat "$HOME/.pi/agent/settings.json"' | grep -q "\"lastChangelogVersion\": \"${ver}\"" \
   && pass "settings seeded with current version (no changelog)" || fail "settings not seeded with pi version"
+
+# trust.json must be writable AND pre-trust the project cwd (so pi never
+# prompts or hits EROFS writing it). Run the entrypoint's seed against a chosen
+# workdir and assert that resolved path is trusted true.
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" -w /tmp \
+  "$IMAGE_TAG" bash -lc '
+    /usr/local/bin/seed-trust.sh
+    test -w "$HOME/.pi/agent/trust.json" && echo TRUST_WRITABLE
+    node -e "const t=require(process.env.HOME+\"/.pi/agent/trust.json\"); const fs=require(\"fs\"); const k=fs.realpathSync(\"/tmp\"); process.stdout.write(t[k]===true?\"CWD_TRUSTED\":\"NOT_TRUSTED\")"
+  ' 2>&1)"
+echo "$out" | grep -q TRUST_WRITABLE && echo "$out" | grep -q CWD_TRUSTED \
+  && pass "trust.json seeded writable + pre-trusts project cwd" || fail "trust seed wrong: $out"
 
 run 'touch "$HOME/.npm/wtest" "$HOME/.pi/agent/npm/wtest" 2>&1 && echo NPM_WRITABLE' | grep -q NPM_WRITABLE \
   && pass "npm dirs writable (pi can install extensions)" || fail "npm dirs not writable for arbitrary uid"

@@ -26,7 +26,8 @@ RUN bash /tmp/setup-home.sh && rm /tmp/setup-home.sh
 COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
 COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
 COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
-RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh
+COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
+RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
 
 COPY pa-skills /opt/pa/skills
 COPY pa-extensions /opt/pa/extensions

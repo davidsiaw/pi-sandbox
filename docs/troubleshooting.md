@@ -20,7 +20,7 @@ error, add `args: ['--no-sandbox']` to the browser launch, or add
 `yousoro_browse` masks the JavaScript/DOM fingerprint layer (webdriver,
 userAgentData → Google Chrome, real WebGL GPU, viewport) and waits out
 Cloudflare "Just a moment" interstitials. It does **not** fix the network layer
-(TLS/JA3 handshake, datacenter IP) or solve CAPTCHAs. So:
+(TLS/JA3 handshake, egress IP) or solve CAPTCHAs. So:
 
 - **Cloudflare interstitial ("Just a moment")** — usually clears on its own; if
   it doesn't within `challenge_wait_ms` (default 20s), it's a harder managed

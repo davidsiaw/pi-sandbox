@@ -25,7 +25,7 @@ the working directory.
 | `~/.pi/agent/extensions`           | `/home/agent/.pi/agent/extensions`               | rw   | agent-authored extensions persist |
 | `~/.pi/agent/settings.json`        | `/opt/pa/settings.host.json`                     | ro   | staged, then seeded (see below) |
 | `~/.pi/agent/models.json`          | same                                             | ro   | model config |
-| `~/.pi/agent/trust.json`           | same                                             | ro   | trust config |
+| `~/.pi/agent/trust.json`           | *(not mounted)*                                  | —    | generated writable in-container (see below) |
 | `~/.pi/agent/auth.json` (optional) | same                                             | ro   | model auth token (see below) |
 | `~/.pi/agent/AGENTS.md` (if present) | same                                           | ro   | your global context file |
 | `~/.pi/agent/CLAUDE.md` (if present) | same                                           | ro   | your global context file |
@@ -142,6 +142,29 @@ entrypoint runs `seed-settings.sh`, which writes a **writable**
 settings plus `lastChangelogVersion` set to the image's pi version. Since that
 always matches the installed version, there are no "new" entries and no
 changelog. Your host `settings.json` is never modified.
+
+## Project trust
+
+pi prompts for trust the first time it sees a project's local resources
+(extensions, `.pi/` config, etc.) and persists your choice by writing
+`~/.pi/agent/trust.json`. Two sandbox problems:
+
+1. Mounting the host `trust.json` **read-only** at its real slot makes clicking
+   **"Trust"** fail — pi can't write the file.
+2. Even if it could, you launched `pa` deliberately in the directory you want to
+   work in, so the prompt is friction.
+
+`pa` handles both:
+
+- It passes **`pi --approve`**, which trusts the project for the run without
+  prompting. Override per-run with `pa … --no-approve` if you want the prompt.
+- It does **not** mount `trust.json` at all. Instead the entrypoint runs
+  `seed-trust.sh`, which **generates** a writable `~/.pi/agent/trust.json` in
+  the ephemeral HOME that pre-trusts the project directory (the project is
+  bind-mounted at its real host path, so `pwd` — canonicalized via
+  `realpathSync`, exactly as pi does — is the key pi looks up). pi therefore
+  never needs to prompt or write, so there's no read-only mount to fail on and
+  your host `trust.json` is never touched.
 
 ## Forwarding secrets / env vars
 
