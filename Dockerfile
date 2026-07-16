@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 FROM debian:trixie-slim
 
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+
 COPY scripts/install-system-deps.sh /tmp/install-system-deps.sh
 RUN bash /tmp/install-system-deps.sh && rm /tmp/install-system-deps.sh
 
