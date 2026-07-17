@@ -37,6 +37,8 @@ apt-get install -y --no-install-recommends \
   zip \
   unzip \
   procps \
+  fd-find \
+  ripgrep \
   less \
   vim-tiny \
   xvfb \

@@ -21,6 +21,9 @@ blocks, so each step is readable and independently editable.
 Installs the toolchain and libraries needed to:
 
 - run mise (`curl`, `ca-certificates`, `git`)
+- give pi its search tools on PATH (`fd-find` → `/usr/bin/fdfind`, `ripgrep` →
+  `/usr/bin/rg`) so pi finds them via its system-PATH check and never downloads
+  copies into the ephemeral `~/.pi/agent/bin` on every container start
 - compile Ruby and Python from source (`build-essential`, `libssl-dev`,
   `libreadline-dev`, `zlib1g-dev`, `libyaml-dev`, `libffi-dev`, and friends)
 - build native gems and pip wheels

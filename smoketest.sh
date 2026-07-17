@@ -47,6 +47,15 @@ run 'command -v mise >/dev/null 2>&1 && echo MISE_OK' | grep -q MISE_OK && pass 
 run 'playwright --version' | grep -qi 'version'          && pass "playwright present" || fail "playwright missing"
 run 'ls /opt/ms-playwright'| grep -q 'chromium'          && pass "chromium present"   || fail "chromium missing"
 
+# fd + ripgrep must be baked on PATH so pi's tools-manager finds them via
+# commandExists() and never downloads into the ephemeral ~/.pi/agent/bin.
+run 'command -v rg >/dev/null 2>&1 && echo RG_OK'      | grep -q RG_OK && pass "ripgrep on PATH" || fail "ripgrep missing from PATH"
+run 'command -v fdfind >/dev/null 2>&1 && echo FD_OK'  | grep -q FD_OK && pass "fd (fdfind) on PATH" || fail "fd missing from PATH"
+# Ask pi's own tools-manager where it resolves fd/rg: must be a system binary
+# (not a path under ~/.pi/agent/bin), which is what suppresses the download.
+out="$(run 'node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/utils/tools-manager.js").then(m=>{const fd=m.getToolPath("fd"),rg=m.getToolPath("rg");const bad=[fd,rg].some(p=>!p||p.includes(".pi/agent/bin"));process.stdout.write(bad?("BAD fd="+fd+" rg="+rg):"TOOLS_ON_PATH")})'\'' ')"
+echo "$out" | grep -q TOOLS_ON_PATH && pass "pi resolves fd+rg to system binaries (no download)" || fail "pi would still download fd/rg: $out"
+
 # Versions, informational only — not asserted (we only care the tools exist).
 note "pi        $(run 'pi --version 2>/dev/null'         | head -1)"
 note "node      $(run 'node --version 2>/dev/null'       | head -1)"
