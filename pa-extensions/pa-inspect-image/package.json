@@ -1,0 +1,13 @@
+{
+  "name": "pa-inspect-image",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Baked pa extension: inspect_image tool that routes images to a vision-capable model from pi's registry, converting them to PNG first.",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "@silvia-odwyer/photon-node": "0.3.4"
+  }
+}

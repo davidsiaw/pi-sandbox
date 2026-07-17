@@ -33,6 +33,8 @@ RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-setting
 
 COPY pa-skills /opt/pa/skills
 COPY pa-extensions /opt/pa/extensions
+COPY scripts/install-extension-deps.sh /tmp/install-extension-deps.sh
+RUN bash /tmp/install-extension-deps.sh && rm /tmp/install-extension-deps.sh
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh

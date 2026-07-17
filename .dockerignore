@@ -1,0 +1,12 @@
+# Never copy local node_modules into the image. Baked extensions that need npm
+# deps get a fresh, deterministic install at build time via
+# scripts/install-extension-deps.sh (run after COPY pa-extensions). This keeps
+# the build reproducible whether or not the builder happens to have a local
+# node_modules lying around.
+**/node_modules/
+
+# Not needed in the build context.
+.git/
+.pi-sessions/
+*.tsbuildinfo
+.DS_Store

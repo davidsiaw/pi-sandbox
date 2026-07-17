@@ -41,7 +41,9 @@ Build stages, in order:
    merge script combines host (first) + base (second) into the
    `APPEND_SYSTEM.md` slot pi loads natively. Skills are copied to
    `/opt/pa/skills` and extensions to `/opt/pa/extensions`, loaded additively by
-   `pa` via `--skill` / `-e`. See [usage.md](usage.md).
+   `pa` via `--skill` / `-e`. See [usage.md](usage.md). Baked extensions that
+   declare npm `dependencies` get a deterministic build-time install via
+   `install-extension-deps.sh`.
 7. **Entrypoint** (`entrypoint.sh`). `CMD ["bash", "-l"]` is a login shell so
    `/etc/profile.d/mise.sh` (mise activation) is sourced.
 
@@ -94,6 +96,21 @@ lockstep) and Chromium plus OS deps via `playwright install --with-deps
 chromium`. Browsers go to a shared, world-readable path (`chmod -R a+rX`) so
 they survive the mise data-dir volume overlay, are usable by any uid, and aren't
 re-downloaded per container.
+
+## scripts/install-extension-deps.sh (root)
+
+Runs after `COPY pa-extensions /opt/pa/extensions`. For each baked extension
+directory at `/opt/pa/extensions/<name>` that ships a `package.json` with a
+non-empty `dependencies` block, runs `npm install --omit=dev` there so the
+extension's `node_modules/` is baked into the image and jiti can resolve the
+deps at runtime. Extensions with no `dependencies` are skipped (most import
+their libs — `typebox`, pi types — from pi's own bundle at runtime).
+
+A `.dockerignore` excludes `**/node_modules/`, so a local `node_modules` on the
+builder never leaks into the image; the install here is the single source of
+truth. Example consumer: `pa-inspect-image` depends on
+`@silvia-odwyer/photon-node` (pure WASM, same lib pi uses) to convert images to
+PNG before sending them to the vision model.
 
 ## scripts/install-mise.sh (root)
 
