@@ -11,7 +11,47 @@ description: >-
   docs / news / papers. Covers link harvesting (extract="a" extract_attr="href")
   and bounded BFS across pages.
   以 yousoro_browse 於 pa 匣中搜網、讀頁，勿用 curl／wget／fetch。
+trigger_keywords:
+  - search
+  - look up
+  - find
+  - browse
+  - check url
+  - verify fact
+  - research
+  - web search
+  - online
+  - google
+  - duckduckgo
+  - reddit
+  - what is
+  - who is
+  - when was
+  - where to
+  - how to
+  - news about
+  - latest
+  - update on
+  - check
+  - see
+  - view
+  - get info about
+  - tell me about
+  - learn about
+  - investigate
+  - explore
+  - discover
+auto_load: true
 ---
+
+# CRITICAL AUTOMATION RULE:
+# If the user's prompt matches ANY of the trigger_keywords above, 
+# you MUST execute `read /home/david/programs/pi-sandbox/pa-skills/web-search/SKILL.md` BEFORE 
+# attempting any web search or browsing action.
+# The sandbox IP blocks standard engines (Google/Bing) and requires 
+# specific fallback engines (DuckDuckGo HTML, Yahoo) and BFS link-harvesting 
+# strategies defined in this file.
+# Failure to read this file first is a critical error.
 
 # web-search
 
@@ -55,6 +95,30 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 
 欲窄至真內容鏈，知內容區則擇之（如 `article a`、`main a`、`h2 a`、`.post a`），
 先斬 nav／footer／login 之雜，後評。
+
+## cloak_browse 具（重難點突破）
+
+**適用場景**：reCAPTCHA v3、Cloudflare Turnstile、行為檢測（Mouse/Keyboard tracking）。
+
+CloakBrowser 乃 Chromium 之 fork，具 **71 處 C++ 源級修補**（非 JavaScript 修補），
+故能過 reCAPTCHA v3（0.9 分，服務器驗證）、Turnstile、FingerprintJS 等。
+
+要參：
+
+- `url`——所取之頁（http／https）。
+- `humanize`——`true`／`false`，啟人類行為模擬（Bézier 曲線、真實打字時序）。**默 `true`**。
+- `headless`——`true`／`false`，頭less 模式。默 `true`。
+- `format`——`"html"`／`"markdown"`，返格式。默 `"html"`。
+- `fingerprint`——可選，固定指紋種子（同一站用同一種子，似回訪者）。
+
+```
+cloak_browse url="https://example.com" humanize=true format="html"
+```
+
+**注意**：
+- 匣中預備者為 **免費版 v146**（可能漸舊）。若需最新版及 0.9 reCAPTCHA，設 `CLOAKBROWSER_LICENSE_KEY`。
+- 若 `yousoro_browse` 或 `camoufox_browse` 失敗，試 `cloak_browse` 為最後手段。
+- **行為檢測必啟 `humanize=true`**，否則仍可能被識破。
 
 ## 研之環（有界 BFS）
 
@@ -140,7 +204,27 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 - ✅ **npm registry**——`https://registry.npmjs.org/-/v1/search?text=<q>&size=<n>` ——返 JSON，包發現。
 - ❌ **PyPI 搜索**——`pypi.org/search` 遭 CAPTCHA（Client Challenge）。已知包名則用 `https://pypi.org/pypi/<name>/json`。
 
+## 工具比較 (Tool Comparison)
+
+| 工具 | 引擎 | 優勢 | 適用場景 |
+|------|------|------|----------|
+| `yousoro_browse` | Chromium (Playwright + JS patches) | 快速、輕量、處理 Cloudflare 403-then-redirect | 一般瀏覽、Cloudflare 挑戰頁 |
+| `camoufox_browse` | Firefox (Camoufox C++ patches) | C++ 級別指紋欺騙、不同指紋配置文件 | DataDome, PerimeterX, Turnstile |
+| `cloak_browse` | Chromium (CloakBrowser C++ patches) | **reCAPTCHA v3 (0.9 分)**, TLS 指紋偽造，行為模擬 | reCAPTCHA v3, Turnstile, 行為檢測 |
+
+**選擇指南：**
+- **一般網站 / Cloudflare**: `yousoro_browse` (最快)
+- **難搞的 WAF (DataDome, PerimeterX)**: `camoufox_browse` (Firefox 不同路徑)
+- **reCAPTCHA v3 / Turnstile / 行為檢測**: `cloak_browse` (唯一能過 reCAPTCHA v3 的免費方案)
+- **如果一個工具失敗**: 嘗試另一個 (不同引擎/指紋配置文件)
+
 通則：多數 Cloudflare「Just a moment」瞬擋今由 yousoro_browse 自過（Google Chrome 指紋、真 GPU、候其自解）。此類站行「**先 403 後轉**」之關——首返 403 挑戰頁，指紋過則轉真頁；故初之 403 非真擋，工具候其自解，過則以 200 論。然**圖形 CAPTCHA（PyPI、Mojeek）與最硬之 managed challenge（find.4chan.org）仍不得過**——此非指紋之事，乃須解謎或真 residential IP。若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
+
+**重難點突破：**
+- **reCAPTCHA v3**: 僅 `cloak_browse` 能穩定通過 (0.9 分，Pro 版)。其他工具通常失敗。
+- **Cloudflare Turnstile**: `yousoro_browse` (403-then-redirect 處理), `cloak_browse` (C++ 級別) 均可。
+- **DataDome / PerimeterX**: `camoufox_browse` (Firefox C++ 級別) 通常優於 Chromium 方案。
+- **行為檢測 (Mouse/Keyboard)**: `cloak_browse` 的 `humanize=true` 參數模擬真實人類行為。
 
 2. **讀且集。**每頁：
    - 讀頁文。**若已答，止而報**——引其 URL。

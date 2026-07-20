@@ -39,6 +39,7 @@ set -x
 docker buildx build \
   --platform "$PLATFORMS" \
   --build-arg "PI_VERSION=${PI_VERSION}" \
+  --build-arg "CLOAKBROWSER_VERSION=${CLOAKBROWSER_VERSION}" \
   "${TAG_ARGS[@]}" \
   ${OUTPUT_ARGS[@]+"${OUTPUT_ARGS[@]}"} \
   .

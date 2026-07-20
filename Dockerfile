@@ -25,6 +25,20 @@ RUN bash /tmp/install-mise.sh && rm /tmp/install-mise.sh
 COPY scripts/setup-home.sh /tmp/setup-home.sh
 RUN bash /tmp/setup-home.sh && rm /tmp/setup-home.sh
 
+# Install fonts required for canvas fingerprinting (critical for Linux/Chrome)
+RUN apt-get update && apt-get install -y \
+    fonts-noto-color-emoji \
+    fonts-freefont-ttf \
+    fonts-unifont \
+    fonts-ipafont-gothic \
+    fonts-wqy-zenhei \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install CloakBrowser (latest free binary)
+COPY scripts/install-cloakbrowser.sh /tmp/install-cloakbrowser.sh
+RUN bash /tmp/install-cloakbrowser.sh && rm /tmp/install-cloakbrowser.sh
+
 COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
 COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
 COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
@@ -33,6 +47,12 @@ RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-setting
 
 COPY pa-skills /opt/pa/skills
 COPY pa-extensions /opt/pa/extensions
+
+# Install CloakBrowser npm package globally (for Node API access)
+RUN npm install -g cloakbrowser playwright-core 2>/dev/null || true
+
+# Install dependencies for pa-cloakbrowser extension
+RUN cd /opt/pa/extensions/pa-cloakbrowser && npm install 2>/dev/null || true
 COPY scripts/install-extension-deps.sh /tmp/install-extension-deps.sh
 RUN bash /tmp/install-extension-deps.sh && rm /tmp/install-extension-deps.sh
 

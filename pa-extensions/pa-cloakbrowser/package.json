@@ -1,0 +1,11 @@
+{
+  "name": "pa-cloakbrowser",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "typebox": "^1.3.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

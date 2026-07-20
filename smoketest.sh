@@ -128,6 +128,31 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# CloakBrowser smoke test: verify binary exists, is executable, and can run --version
+out="$(run 'test -x /opt/cloakbrowser/cloakbrowser-bin && echo CLOAKBROWSER_OK' 2>&1)"
+if echo "$out" | grep -q 'CLOAKBROWSER_OK'; then
+  pass "CloakBrowser binary present and executable"
+else
+  fail "CloakBrowser binary missing or not executable"
+fi
+
+# Verify CloakBrowser can actually start and report version (non-interactive check)
+out="$(run '/opt/cloakbrowser/cloakbrowser-bin --version 2>&1 || echo CLOAKBROWSER_FAIL' | head -1)"
+if echo "$out" | grep -qiE 'version|cloakbrowser'; then
+  pass "CloakBrowser --version works"
+else
+  fail "CloakBrowser failed to run (--version): $out"
+fi
+
+# CloakBrowser functional test: actually fetch a simple page to verify rendering works
+# We use http://example.com which is lightweight and always available.
+out="$(run 'timeout 45 /opt/cloakbrowser/cloakbrowser-bin --headless --no-sandbox --dump-dom http://example.com 2>&1 | grep -i "<h1>Example Domain</h1>" && echo PAGE_FETCH_OK' 2>&1)"
+if echo "$out" | grep -q 'PAGE_FETCH_OK'; then
+  pass "CloakBrowser successfully fetched and rendered a page"
+else
+  fail "CloakBrowser failed to fetch/render example.com: $out"
+fi
+
 out="$(run 'diff -q /opt/pa/APPEND_SYSTEM.base.md "$HOME/.pi/agent/APPEND_SYSTEM.md" >/dev/null 2>&1 && echo SAME')"
 echo "$out" | grep -q SAME \
   && pass "no host append -> target equals baked base" || fail "target != base when no host append"

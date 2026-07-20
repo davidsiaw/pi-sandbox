@@ -790,6 +790,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 		name: "yousoro_browse",
 		label: "Yousoro Browse",
 		description:
+			"CRITICAL: Load the 'web-search' skill first for search/browsing guidance. " +
 			"Fetch a web page with a fingerprint-masked headless Chromium (Google " +
 			"Chrome UA + userAgentData, real WebGL GPU, coherent macOS hardware, " +
 			"canvas/audio noise, human-ish interaction), wait out Cloudflare " +
@@ -801,6 +802,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			"to collect links with their text.",
 		promptSnippet: "Fetch a web page past bot-blocks using the yousoro headless browser",
 		promptGuidelines: [
+			"CRITICAL: Before using yousoro_browse for search/browsing tasks, load the 'web-search' skill which contains essential guidance on search engines, BFS strategies, and blocked-site handling.",
 			"Use yousoro_browse to read a web page when a normal fetch is blocked (403/429/503) or when the site is known to reject headless browsers (Reddit, Cloudflare).",
 			"Prefer yousoro_browse over ad-hoc Playwright scripts for one-off page reads.",
 			"Set yousoro_browse scroll>0 for infinite-scroll feeds (e.g. Reddit) so lazy-loaded items are captured.",
