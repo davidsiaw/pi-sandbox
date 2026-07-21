@@ -136,8 +136,10 @@ else
   fail "CloakBrowser binary missing or not executable"
 fi
 
-# Verify CloakBrowser can actually start and report version (non-interactive check)
-out="$(run '/opt/cloakbrowser/cloakbrowser-bin --version 2>&1 || echo CLOAKBROWSER_FAIL' | head -1)"
+# Verify CloakBrowser can actually start and report version (non-interactive check).
+# Avoid `head -1`: it closes the pipe after reading one line, causing
+# CloakBrowser child processes to get SIGPIPE (exit 141) with pipefail.
+out="$(run '/opt/cloakbrowser/cloakbrowser-bin --version 2>&1 || echo CLOAKBROWSER_FAIL' | cat)"
 if echo "$out" | grep -qiE 'version|cloakbrowser'; then
   pass "CloakBrowser --version works"
 else
@@ -146,7 +148,9 @@ fi
 
 # CloakBrowser functional test: actually fetch a simple page to verify rendering works
 # We use http://example.com which is lightweight and always available.
-out="$(run 'timeout 45 /opt/cloakbrowser/cloakbrowser-bin --headless --no-sandbox --dump-dom http://example.com 2>&1 | grep -i "<h1>Example Domain</h1>" && echo PAGE_FETCH_OK' 2>&1)"
+# grep -c returns 0 when count>0 (match found) or 1 (no match), avoiding
+# SIGPIPE from grep exiting before the upstream finishes streaming.
+out="$(run 'timeout 45 /opt/cloakbrowser/cloakbrowser-bin --headless --no-sandbox --dump-dom http://example.com 2>&1 | grep -ci "<h1>Example Domain</h1>" && echo PAGE_FETCH_OK' 2>&1)"
 if echo "$out" | grep -q 'PAGE_FETCH_OK'; then
   pass "CloakBrowser successfully fetched and rendered a page"
 else
