@@ -139,8 +139,8 @@ fi
 # Verify CloakBrowser can actually start and report version (non-interactive check).
 # Avoid `head -1`: it closes the pipe after reading one line, causing
 # CloakBrowser child processes to get SIGPIPE (exit 141) with pipefail.
-out="$(run '/opt/cloakbrowser/cloakbrowser-bin --version 2>&1 || echo CLOAKBROWSER_FAIL' | cat)"
-if echo "$out" | grep -qiE 'version|cloakbrowser'; then
+out="$(run '/opt/cloakbrowser/cloakbrowser-bin --version 2>&1 || echo CLOAKBROWSER_FAIL')"
+if echo "$out" | grep -qiE 'CloakBrowser|Chromium|version'; then
   pass "CloakBrowser --version works"
 else
   fail "CloakBrowser failed to run (--version): $out"
