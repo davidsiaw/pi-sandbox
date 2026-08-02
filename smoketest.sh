@@ -102,6 +102,41 @@ run 'echo "$PI_RESUME_COMMAND"' | grep -q '^pa$' \
 run 'grep -q "process.env.PI_RESUME_COMMAND || APP_NAME" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo PATCHED' | grep -q PATCHED \
   && pass "resume-command patch applied to pi" || fail "resume-command patch missing"
 
+# Tool calls must be serialized. pi's agent loop supports it but the coding agent
+# never sets toolExecution, so install-pi.sh patches agent.js to read
+# PI_TOOL_EXECUTION and the image sets it to "sequential".
+run 'echo "$PI_TOOL_EXECUTION"' | grep -q '^sequential$' \
+  && pass "PI_TOOL_EXECUTION=sequential in image" || fail "PI_TOOL_EXECUTION not set to sequential"
+run 'grep -q "process.env.PI_TOOL_EXECUTION" /usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/agent.js && echo PATCHED' | grep -q PATCHED \
+  && pass "tool-execution patch applied to pi-agent-core" || fail "tool-execution patch missing"
+
+# Assert the patch actually changes the resolved strategy, not just that the
+# string is present: construct the Agent and read back toolExecution for each
+# env value. Guards against a future upstream refactor that keeps the text but
+# ignores it.
+# Written to a file inside the container rather than passed inline: `&&` and
+# backticks do not survive the nested single-quoting of run() + bash -lc, and
+# fail silently when they break. A stub streamFn is required because the Agent
+# constructor throws without one; no model call is made.
+out="$(run 'cat > /tmp/toolexec.mjs <<"EOF"
+import { Agent } from "/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/agent.js";
+const stub = async () => { throw new Error("unused"); };
+const modeFor = (v) => {
+  if (v === undefined) delete process.env.PI_TOOL_EXECUTION; else process.env.PI_TOOL_EXECUTION = v;
+  return new Agent({ streamFn: stub }).toolExecution;
+};
+const seq = modeFor("sequential");
+const par = modeFor("parallel");
+const unset = modeFor(undefined);
+const junk = modeFor("lolwut");
+const ok = seq === "sequential" && par === "parallel" && unset === "parallel" && junk === "parallel";
+process.stdout.write(ok ? "TOOLEXEC_OK" : "BAD seq=" + seq + " par=" + par + " unset=" + unset + " junk=" + junk);
+EOF
+node /tmp/toolexec.mjs 2>&1')"
+echo "$out" | grep -q TOOLEXEC_OK \
+  && pass "PI_TOOL_EXECUTION selects strategy (seq/parallel/unset/invalid)" \
+  || fail "tool-execution patch does not affect resolved strategy: $out"
+
 run 'test -s /opt/pa/APPEND_SYSTEM.base.md && echo BASE_OK' | grep -q BASE_OK \
   && pass "baked APPEND_SYSTEM.base.md present" || fail "baked base guidance missing"
 
@@ -156,6 +191,24 @@ if echo "$out" | grep -q 'PAGE_FETCH_OK'; then
 else
   fail "CloakBrowser failed to fetch/render example.com: $out"
 fi
+
+# pa-rag: the walker must include dotfiles / dot-dirs / past pi sessions while
+# excluding .git, node_modules and its own store, and the upstream loader must
+# still reach pi-local-rag's submodules through jiti. PA_RAG_SKIP_EMBED skips
+# the ONNX inference phase: it is far too slow under QEMU emulation in CI, and
+# the structural checks are what actually regress.
+out="$(run 'cd /opt/pa/extensions/pa-rag && PA_RAG_SKIP_EMBED=1 node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-rag selftest (walker + upstream loader)"
+else
+  fail "pa-rag selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
+# The 23MB embedding model must be baked, not downloaded at runtime: a cold
+# container has no reason to hit the network, and QEMU builds must not stall.
+run 'test -d /opt/pa/models/Xenova/all-MiniLM-L6-v2 && echo MODEL_BAKED' | grep -q MODEL_BAKED \
+  && pass "pa-rag embedding model baked into image" || fail "pa-rag model missing from /opt/pa/models"
 
 out="$(run 'diff -q /opt/pa/APPEND_SYSTEM.base.md "$HOME/.pi/agent/APPEND_SYSTEM.md" >/dev/null 2>&1 && echo SAME')"
 echo "$out" | grep -q SAME \

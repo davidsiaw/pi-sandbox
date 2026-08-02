@@ -90,6 +90,7 @@ Set these when invoking `pa`:
 | `MOUNT_AUTH`    | `1`                              | `0` = do **not** mount `auth.json`; keeps all credentials out of the sandbox (the agent then needs its own auth inside) |
 | `MISE_VOLUME`   | `pi-sandbox-mise`                | name of the runtime cache volume |
 | `NO_MOUNT_SYSTEM` | `0`                            | `1` = do **not** mount a host `SYSTEM.md` (which would replace pi's default system prompt) |
+| `PI_TOOL_EXECUTION` | `sequential`                 | tool-call strategy. `sequential` runs one tool at a time; `parallel` restores upstream concurrent fan-out. Any other value falls back to `parallel`. |
 
 Examples:
 
@@ -103,6 +104,24 @@ MOUNT_AUTH=0 pa
 # use a separate throwaway runtime cache
 MISE_VOLUME=scratch pa
 ```
+
+### Tool call serialization
+
+The image runs tool calls **one at a time**. Upstream pi executes sibling tool
+calls from the same assistant message concurrently, which a weaker model can turn
+into ten simultaneous calls: interleaved output, multiplied rate-limit pressure,
+and a run that is hard to review or interrupt.
+
+This costs wall-clock time on independent work — three 3-second commands take ~9s
+instead of ~3s. If you want the throughput back:
+
+```bash
+docker run -e PI_TOOL_EXECUTION=parallel ...   # or set it in the pa launcher
+```
+
+Note that built-in `edit`/`write` serialize per-file through pi's file mutation
+queue even in parallel mode, so this is about predictability, not data safety.
+See [scripts.md](scripts.md) for how the toggle is patched in.
 
 ## System prompt & context files
 

@@ -9,6 +9,10 @@ npm-debug.log*
 # pi session files (pa launches pi with --session-dir "$PWD/.pi-sessions")
 .pi-sessions/
 
+# pa-rag index store (SQLite + vectors). Machine-generated and multi-MB;
+# rebuilt on demand from the working tree.
+.pirag/
+
 # Build / test scratch
 *.tsbuildinfo
 /tmp/

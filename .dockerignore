@@ -8,5 +8,6 @@
 # Not needed in the build context.
 .git/
 .pi-sessions/
+.pirag/
 *.tsbuildinfo
 .DS_Store

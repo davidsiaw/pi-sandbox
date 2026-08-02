@@ -25,19 +25,37 @@ fi
 
 echo "Architecture: ${ARCH} (${PLATFORM})"
 
-# Fetch all releases and find the latest FREE one
-echo "Checking GitHub releases for latest free version..."
+# An explicit CLOAKBROWSER_VERSION pins one tag and skips auto-detection.
+# Empty (the default) means "scan releases for the newest free one".
+PINNED_VERSION="${CLOAKBROWSER_VERSION:-}"
 
-# Get all releases (sorted by date, newest first)
-ALL_RELEASES=$(curl -sL "https://api.github.com/repos/CloakHQ/CloakBrowser/releases?per_page=20")
+if [ -n "${PINNED_VERSION}" ]; then
+  echo "Using pinned CloakBrowser version: ${PINNED_VERSION}"
+  ALL_RELEASES=""
+else
+  # Fetch all releases and find the latest FREE one
+  echo "Checking GitHub releases for latest free version..."
+  # Get all releases (sorted by date, newest first)
+  ALL_RELEASES=$(curl -sL "https://api.github.com/repos/CloakHQ/CloakBrowser/releases?per_page=20")
+fi
 
 # Find the latest release that is NOT Pro-only
 # Pro releases typically have "-pro" in tag or require license
 FREE_RELEASE=""
 FREE_TAG=""
 
+if [ -n "${PINNED_VERSION}" ]; then
+  FREE_TAG="${PINNED_VERSION}"
+  FREE_RELEASE=$(curl -sL "https://api.github.com/repos/CloakHQ/CloakBrowser/releases/tags/${PINNED_VERSION}")
+  if ! echo "${FREE_RELEASE}" | grep -q '"browser_download_url"'; then
+    echo "ERROR: CloakBrowser release '${PINNED_VERSION}' not found or has no downloadable assets"
+    exit 1
+  fi
+fi
+
 while IFS= read -r tag; do
   [ -z "$tag" ] && continue
+  [ -n "${FREE_TAG}" ] && break
   
   # Skip Pro releases
   if [[ "$tag" == *"-pro"* ]] || [[ "$tag" == *"Pro"* ]]; then

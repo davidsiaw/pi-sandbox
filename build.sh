@@ -35,11 +35,15 @@ else
   TAG_ARGS+=(--tag "${IMAGE}:${TAG}")
 fi
 
+BUILD_ARGS=(--build-arg "PI_VERSION=${PI_VERSION}")
+if [ -n "${CLOAKBROWSER_VERSION:-}" ]; then
+  BUILD_ARGS+=(--build-arg "CLOAKBROWSER_VERSION=${CLOAKBROWSER_VERSION}")
+fi
+
 set -x
 docker buildx build \
   --platform "$PLATFORMS" \
-  --build-arg "PI_VERSION=${PI_VERSION}" \
-  --build-arg "CLOAKBROWSER_VERSION=${CLOAKBROWSER_VERSION}" \
+  "${BUILD_ARGS[@]}" \
   "${TAG_ARGS[@]}" \
   ${OUTPUT_ARGS[@]+"${OUTPUT_ARGS[@]}"} \
   .

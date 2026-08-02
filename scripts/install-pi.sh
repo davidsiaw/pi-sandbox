@@ -30,6 +30,53 @@ if (src.includes(appNamePatched) && src.includes(guardPatched)) {
 }
 PATCH
 
+# Serialize tool calls by default.
+#
+# pi's agent loop already supports sequential execution -- agent-loop.js checks
+# `config.toolExecution === "sequential"` -- but the coding agent never sets it
+# (grep the dist: zero references), so the "parallel" default in agent.js always
+# wins. There is no setting, flag, or env var to reach it.
+#
+# Parallel fan-out is risky here: a weaker model can emit ten tool calls at once,
+# which interleaves output, multiplies rate-limit pressure, and makes a run hard
+# to review or interrupt. Built-in edit/write do serialize per-file through
+# withFileMutationQueue(), so this is about predictability rather than
+# correctness -- but predictability is what we want by default.
+#
+# This makes the default configurable via PI_TOOL_EXECUTION and flips it to
+# "sequential" in the image (see ENV in the Dockerfile). Set
+# PI_TOOL_EXECUTION=parallel to restore upstream behaviour.
+#
+# NOTE: this patches a transitive dependency's internals, so it asserts its
+# anchor and fails the build loudly if upstream restructures.
+AGENT_CORE_FILE="$PI_DIR/node_modules/@earendil-works/pi-agent-core/dist/agent.js"
+
+node - "$AGENT_CORE_FILE" <<'PATCH'
+const fs = require("fs");
+const file = process.argv[2];
+if (!fs.existsSync(file)) {
+  throw new Error(`tool-execution patch: ${file} not found`);
+}
+let src = fs.readFileSync(file, "utf8");
+
+const anchor = 'this.toolExecution = runtimeOptions.toolExecution ?? "parallel";';
+const patched =
+  'this.toolExecution = runtimeOptions.toolExecution ?? ' +
+  '(process.env.PI_TOOL_EXECUTION === "parallel" || process.env.PI_TOOL_EXECUTION === "sequential" ' +
+  '? process.env.PI_TOOL_EXECUTION : "parallel");';
+
+if (src.includes(patched)) {
+  console.log("tool-execution patch already applied");
+} else {
+  if (!src.includes(anchor)) throw new Error("tool-execution patch: anchor not found");
+  const count = src.split(anchor).length - 1;
+  if (count !== 1) throw new Error(`tool-execution patch: expected 1 anchor, found ${count}`);
+  src = src.replace(anchor, patched);
+  fs.writeFileSync(file, src);
+  console.log("tool-execution patch applied");
+}
+PATCH
+
 pi --version || true
 
 rm -rf /home/agent/.npm

@@ -13,6 +13,7 @@ the host.
 - [usage.md](usage.md) — running the agent with the `pa` launcher, mounts, env toggles
 - [runtimes.md](runtimes.md) — how mise manages Ruby/Node/Python and how the cache works
 - [yousoro-browsing.md](yousoro-browsing.md) — the `pa-yousoro-browse` tool: fingerprint masking, Cloudflare handling, headed/Xvfb, what it does/doesn't fix
+- [rag.md](rag.md) — the `pa-rag` extension: automatic local hybrid index in `.pirag/`, what gets indexed (dotfiles, past sessions), the size gate, and how it reuses `pi-local-rag` without forking
 - [building.md](building.md) — `build.sh`, dual-arch builds, and the GitHub workflow
 - [testing.md](testing.md) — `smoketest.sh` and what it verifies
 - [scripts.md](scripts.md) — reference for the (comment-free) Dockerfile and scripts

@@ -1,0 +1,13 @@
+{
+  "name": "pa-rag",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Baked pa extension: auto-indexes the project into a local hybrid RAG (BM25 + vector) on session start, including dotfiles and past pi sessions. Wraps pi-local-rag's indexer without forking it.",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "pi-local-rag": "0.4.1"
+  }
+}

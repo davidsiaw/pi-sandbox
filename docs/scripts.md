@@ -82,6 +82,27 @@ skips the `--session-dir` arg (the `pa` launcher already supplies it from
 two exact anchors, is idempotent (safe to re-run), and errors loudly if the
 anchors move in a future pi release. See [usage.md](usage.md#resuming-a-session).
 
+It then **patches tool execution to be configurable**. pi's agent loop already
+supports serialized tool calls — `agent-loop.js` branches on
+`config.toolExecution === "sequential"` — but the coding agent never sets that
+option (there are zero references to `toolExecution` in its `dist`), so the
+`"parallel"` default in `pi-agent-core/dist/agent.js` always wins and no setting,
+flag, or env var can reach it. The script rewrites that one line to honour
+`PI_TOOL_EXECUTION`, and the Dockerfile sets it to `sequential`.
+
+Why: a weaker model can emit ten tool calls in a single message. Concurrent
+execution interleaves output, multiplies rate-limit pressure, and makes a run
+hard to review or interrupt. Built-in `edit`/`write` already serialize per-file
+through `withFileMutationQueue()`, so this is about predictability rather than
+correctness. Set `PI_TOOL_EXECUTION=parallel` to restore upstream behaviour; any
+value other than `sequential` or `parallel` falls back to `parallel`.
+
+This patch reaches into a **transitive dependency** (`pi-agent-core`), so it
+asserts its anchor appears exactly once and fails the build if upstream
+restructures. The smoke test checks both the patch text and the resolved
+strategy for all four env states, so a refactor that keeps the string but ignores
+it is still caught.
+
 Finally, because this step is the **last root step** and ran npm as root (with
 `HOME=/home/agent`), it removes and recreates `~/.npm` and `~/.pi/agent/npm`
 `0777` at the end. pi installs extensions with npm at runtime as the arbitrary

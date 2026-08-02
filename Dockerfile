@@ -35,9 +35,14 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CloakBrowser (latest free binary)
+# Install CloakBrowser. Empty CLOAKBROWSER_VERSION (the default) means "detect
+# the latest free release"; set it to pin a specific tag when auto-detection
+# picks a Pro-only release. Declared as an ARG so build.sh can forward it --
+# without this the flag was accepted and silently ignored.
+ARG CLOAKBROWSER_VERSION=
 COPY scripts/install-cloakbrowser.sh /tmp/install-cloakbrowser.sh
-RUN bash /tmp/install-cloakbrowser.sh && rm /tmp/install-cloakbrowser.sh
+RUN CLOAKBROWSER_VERSION="${CLOAKBROWSER_VERSION}" bash /tmp/install-cloakbrowser.sh \
+ && rm /tmp/install-cloakbrowser.sh
 
 COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
 COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
@@ -56,12 +61,20 @@ RUN cd /opt/pa/extensions/pa-cloakbrowser && npm install 2>/dev/null || true
 COPY scripts/install-extension-deps.sh /tmp/install-extension-deps.sh
 RUN bash /tmp/install-extension-deps.sh && rm /tmp/install-extension-deps.sh
 
+# Bake the pa-rag embedding model and strip ONNX Runtime's CUDA / foreign-platform
+# binaries. Must run in the same layer as the prune to actually shrink the image.
+COPY scripts/install-rag-model.sh /tmp/install-rag-model.sh
+RUN bash /tmp/install-rag-model.sh && rm /tmp/install-rag-model.sh
+
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 ARG PI_VERSION=latest
 ENV PI_VERSION=${PI_VERSION}
 ENV PI_RESUME_COMMAND=pa
+# Serialize tool calls: one at a time instead of concurrent fan-out. Read by the
+# tool-execution patch in install-pi.sh. Set PI_TOOL_EXECUTION=parallel to opt out.
+ENV PI_TOOL_EXECUTION=sequential
 COPY scripts/install-pi.sh /tmp/install-pi.sh
 RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 
