@@ -35,6 +35,34 @@ run() {
     "$IMAGE_TAG" bash -lc "$1" 2>&1
 }
 
+# Like run(), but DISCARDS stderr. The entrypoint writes its diagnostics there
+# ("Adding agent user to /etc/passwd..."), and run()'s 2>&1 would fold them into
+# stdout ahead of the real output -- which is how the version notes below ended
+# up reporting the entrypoint message instead of a version.
+run_clean() {
+  docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+    -v "${VOLUME}:${MISE_MOUNT}" \
+    "$IMAGE_TAG" bash -lc "$1" 2>/dev/null
+}
+
+# First line of a version command's stdout that looks like a version.
+#
+# Reads all input then picks with awk, rather than `grep -m1` or `head -1`.
+# Both of those exit as soon as they match, which SIGPIPEs the producer (exit
+# 141) and, under `set -o pipefail`, makes the `||` branch fire *in addition to*
+# the match -- printing the version AND "(unknown)". Version output is short
+# enough that it would not trigger today, but this is the same footgun that made
+# the CloakBrowser checks exit 141.
+version_of() {
+  local out
+  out="$(run_clean "$1 2>/dev/null" | awk '/[0-9]+\.[0-9]+/ { print; exit }')"
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+  else
+    echo "(unknown)"
+  fi
+}
+
 echo "==> Running checks as uid ${UID_TEST}"
 
 out="$(run 'whoami; test -w "$HOME" && echo HOME_WRITABLE')"
@@ -57,10 +85,11 @@ out="$(run 'node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-
 echo "$out" | grep -q TOOLS_ON_PATH && pass "pi resolves fd+rg to system binaries (no download)" || fail "pi would still download fd/rg: $out"
 
 # Versions, informational only — not asserted (we only care the tools exist).
-note "pi        $(run 'pi --version 2>/dev/null'         | head -1)"
-note "node      $(run 'node --version 2>/dev/null'       | head -1)"
-note "mise      $(run 'mise --version 2>/dev/null'       | head -1)"
-note "playwright $(run 'playwright --version 2>/dev/null' | head -1)"
+note "pi           $(version_of 'pi --version')"
+note "node         $(version_of 'node --version')"
+note "mise         $(version_of 'mise --version')"
+note "playwright   $(version_of 'playwright --version')"
+note "cloakbrowser $(version_of '/opt/cloakbrowser/cloakbrowser-bin --version')"
 
 out="$(run 'mkdir -p /tmp/p && cd /tmp/p && echo 3.3.5 > .ruby-version; ruby -v 2>&1 || true')"
 echo "$out" | grep -qi 'command not found' \
