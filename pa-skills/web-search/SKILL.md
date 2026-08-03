@@ -96,6 +96,19 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 欲窄至真內容鏈，知內容區則擇之（如 `article a`、`main a`、`h2 a`、`.post a`），
 先斬 nav／footer／login 之雜，後評。
 
+## screenshot_url 具（觀其貌，非讀其文）
+
+欲**觀頁之貌**（非讀其文）——察 UI、驗版式、存局中之網頁之狀——則用 `screenshot_url`。
+其以同一掩指紋之 Chromium 渲之（JS 盡行），而**書 PNG 於檔**，返其徑，非返其像。
+
+- `url`、`path`（須 `.png`；相對之徑落於工中，越匣而存；`/tmp` 者匣去即滅）。
+- `wait_for_selector`——候某 selector 現乃截。凡 JS 所渲之 UI，用此勝於猜時。
+- `full_page`、`selector`、`width`／`height`、`scale`（2 則字銳而四倍其重）。
+- 既有其檔則**拒不覆**，別指一徑。頁若為擋／CAPTCHA，則**不書**其檔而告之。
+- 欲觀其像，繼以 `inspect_image image="<其徑>"`。
+
+讀其文用 `yousoro_browse`；觀其貌用 `screenshot_url`。二者勿混。
+
 ## cloak_browse 具（重難點突破）
 
 **適用場景**：reCAPTCHA v3、Cloudflare Turnstile、行為檢測（Mouse/Keyboard tracking）。
@@ -209,6 +222,7 @@ cloak_browse url="https://example.com" humanize=true format="html"
 | 工具 | 引擎 | 優勢 | 適用場景 |
 |------|------|------|----------|
 | `yousoro_browse` | Chromium (Playwright + JS patches) | 快速、輕量、處理 Cloudflare 403-then-redirect | 一般瀏覽、Cloudflare 挑戰頁 |
+| `screenshot_url` | Chromium（同上之掩飾） | JS 盡行而截其貌，書 PNG 於檔（不返 base64） | 覷 UI、驗版式、局中之頁 |
 | `camoufox_browse` | Firefox (Camoufox C++ patches) | C++ 級別指紋欺騙、不同指紋配置文件 | DataDome, PerimeterX, Turnstile |
 | `cloak_browse` | Chromium (CloakBrowser C++ patches) | **reCAPTCHA v3 (0.9 分)**, TLS 指紋偽造，行為模擬 | reCAPTCHA v3, Turnstile, 行為檢測 |
 

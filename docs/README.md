@@ -49,6 +49,8 @@ picon/
 ├── pa-skills/                 # skills baked into the image (subdir per skill)
 │   └── <name>/SKILL.md
 ├── pa-extensions/             # extensions baked into the image (subdir per ext)
+│   ├── _shared/               # helpers shared by extensions; NOT an extension
+│   │                          # itself (no index.ts, so the pa launcher skips it)
 │   └── <name>/index.ts
 └── scripts/                   # build steps, kept out of the Dockerfile
     ├── install-system-deps.sh # apt packages (build/runtime libs)

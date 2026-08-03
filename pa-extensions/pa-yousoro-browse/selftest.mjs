@@ -8,9 +8,13 @@
  * cleared page as blocked).
  *
  * It does NOT bundle or import the extension (no esbuild in the image, and
- * loading via pi needs a model/auth). Instead it reads the sibling index.ts,
- * extracts the pure helpers by regex, strips the few TS annotations they use,
- * and evals them. This is deliberately coupled to this one file's style.
+ * loading via pi needs a model/auth). Instead it reads the source, extracts the
+ * pure helpers by regex, strips the few TS annotations they use, and evals them.
+ * This is deliberately coupled to that file's style.
+ *
+ * The helpers now live in ../_shared/stealth.ts (shared with pa-screenshot), so
+ * that is the file read here. The regexes also tolerate a leading `export `,
+ * which the shared module adds.
  *
  * Usage: node selftest.mjs   (exit 0 = pass, non-zero = fail)
  * Playwright is resolved from the global install baked into the image.
@@ -22,11 +26,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(join(here, "index.ts"), "utf8");
+const src = readFileSync(join(here, "..", "_shared", "stealth.ts"), "utf8");
 
 // --- Extract pure helpers from the source ---------------------------------
 function extractFn(name) {
-	const re = new RegExp(`function ${name}\\([\\s\\S]*?\\n}\\n`, "m");
+	const re = new RegExp(`(?:export )?function ${name}\\([\\s\\S]*?\\n}\\n`, "m");
 	const m = re.exec(src);
 	if (!m) throw new Error(`selftest: could not extract function ${name}`);
 	// Strip TS annotations from the SIGNATURE LINE ONLY (up to the opening "{").
@@ -39,7 +43,7 @@ function extractFn(name) {
 	return cleanSig + rest;
 }
 function extractArray(name) {
-	const re = new RegExp(`const ${name} = \\[[\\s\\S]*?\\];`, "m");
+	const re = new RegExp(`(?:export )?const ${name} = \\[[\\s\\S]*?\\];`, "m");
 	const m = re.exec(src);
 	if (!m) throw new Error(`selftest: could not extract array ${name}`);
 	return m[0];
@@ -55,7 +59,11 @@ const helperSource = [
 	extractFn("looksChallenge"),
 	extractFn("looksBlocked"),
 	"globalThis.__H = { chromeMajor, yousoroUserAgent, secChUa, makeYousoroInitScript, looksChallenge, looksBlocked };",
-].join("\n");
+]
+	.join("\n")
+	// The shared module exports these; `export` is illegal in an eval'd script,
+	// so drop the keyword now that the declarations have been extracted.
+	.replace(/^export /gm, "");
 
 // eslint-disable-next-line no-eval
 (0, eval)(helperSource);

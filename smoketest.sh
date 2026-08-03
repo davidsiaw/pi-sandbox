@@ -192,6 +192,26 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# The shared stealth module must be baked but must NOT look like an extension:
+# it has no index.ts, which is exactly what makes the pa launcher's loader loop
+# skip it. Pointing `pi -e` at a directory without an index.ts is a FATAL pi
+# startup error, so a stray index.ts here would break every container.
+run 'test -f /opt/pa/extensions/_shared/stealth.ts && echo SHARED_OK' | grep -q SHARED_OK \
+  && pass "_shared/stealth.ts baked" || fail "_shared/stealth.ts missing"
+run 'test -e /opt/pa/extensions/_shared/index.ts && echo HAS_INDEX || echo NO_INDEX' | grep -q NO_INDEX \
+  && pass "_shared has no index.ts (launcher skips it)" || fail "_shared/index.ts exists; pa would load it as an extension and abort"
+
+# pa-screenshot guard: output-path policy (.png only, traversal rejected,
+# inside/outside the project classified — that decides whether the file survives
+# the container), refuse-to-overwrite, and a real capture asserting JS ran first.
+out="$(run 'cd /opt/pa/extensions/pa-screenshot && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-screenshot selftest (path policy + JS-rendered capture)"
+else
+  fail "pa-screenshot selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 # CloakBrowser smoke test: verify binary exists, is executable, and can run --version
 out="$(run 'test -x /opt/cloakbrowser/cloakbrowser-bin && echo CLOAKBROWSER_OK' 2>&1)"
 if echo "$out" | grep -q 'CLOAKBROWSER_OK'; then
