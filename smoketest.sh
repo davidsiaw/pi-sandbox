@@ -212,6 +212,21 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-uitag guard: box geometry (in-bounds, positive area, integer coords) and
+# the contract that matters -- cropping by a reported box yields exactly that
+# size, since the tool exists to hand agents crop coordinates. SKIPs when the
+# model was not baked (PA_UITAG_MODEL_URL unset at build time), so a build
+# without the model is not a red test.
+out="$(run 'cd /opt/pa/extensions/pa-uitag && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-uitag selftest (box geometry + crop contract)"
+elif echo "$out" | grep -q 'selftest: SKIP'; then
+  note "pa-uitag selftest skipped (model not baked; set PA_UITAG_MODEL_URL to bake it)"
+else
+  fail "pa-uitag selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 # CloakBrowser smoke test: verify binary exists, is executable, and can run --version
 out="$(run 'test -x /opt/cloakbrowser/cloakbrowser-bin && echo CLOAKBROWSER_OK' 2>&1)"
 if echo "$out" | grep -q 'CLOAKBROWSER_OK'; then

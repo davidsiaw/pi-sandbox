@@ -66,6 +66,14 @@ RUN bash /tmp/install-extension-deps.sh && rm /tmp/install-extension-deps.sh
 COPY scripts/install-rag-model.sh /tmp/install-rag-model.sh
 RUN bash /tmp/install-rag-model.sh && rm /tmp/install-rag-model.sh
 
+# Bake the pa-uitag UI-element detection model (ONNX). Runs after pa-rag because
+# it reuses that extension's onnxruntime-node to verify the model loads. Skips
+# with a clear message when PA_UITAG_MODEL_URL is unset.
+ARG PA_UITAG_MODEL_URL=
+COPY scripts/install-uitag-model.sh /tmp/install-uitag-model.sh
+RUN PA_UITAG_MODEL_URL="${PA_UITAG_MODEL_URL}" bash /tmp/install-uitag-model.sh \
+ && rm /tmp/install-uitag-model.sh
+
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 

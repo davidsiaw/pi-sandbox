@@ -39,6 +39,9 @@ BUILD_ARGS=(--build-arg "PI_VERSION=${PI_VERSION}")
 if [ -n "${CLOAKBROWSER_VERSION:-}" ]; then
   BUILD_ARGS+=(--build-arg "CLOAKBROWSER_VERSION=${CLOAKBROWSER_VERSION}")
 fi
+if [ -n "${PA_UITAG_MODEL_URL:-}" ]; then
+  BUILD_ARGS+=(--build-arg "PA_UITAG_MODEL_URL=${PA_UITAG_MODEL_URL}")
+fi
 
 set -x
 docker buildx build \

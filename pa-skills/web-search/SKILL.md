@@ -109,6 +109,18 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 
 讀其文用 `yousoro_browse`；觀其貌用 `screenshot_url`。二者勿混。
 
+## detect_ui_elements 具（求其位，俾裁而察之）
+
+既得截圖，欲**知諸元之所在**（以裁其片、逐一察之，或定所當擊之處）——則用 `detect_ui_elements`。
+其返每元之框：`x, y, width, height`，皆原圖之像素（左上為原），整數，可徑用於裁。
+
+- 其類粗（八而已：Button、Input_Elements、Navigation、Information_Display、Menu、Sidebar、Visual_Elements、Others），
+  且**不取其文**。欲知某片何言，裁至其框，乃以 `inspect_image` 察之。
+- `min_confidence`（默 .25；欲精則 .5，欲多則 .1）、`iou_threshold`、`label`、`limit`。
+- 於**真應用之截圖**乃善；於樸素之 HTML 頁多返 `Unknown`，此其常也，非誤。
+
+其流：`screenshot_url`（截）→ `detect_ui_elements`（求位）→ 裁 → `inspect_image`（察）。
+
 ## cloak_browse 具（重難點突破）
 
 **適用場景**：reCAPTCHA v3、Cloudflare Turnstile、行為檢測（Mouse/Keyboard tracking）。
@@ -223,6 +235,7 @@ cloak_browse url="https://example.com" humanize=true format="html"
 |------|------|------|----------|
 | `yousoro_browse` | Chromium (Playwright + JS patches) | 快速、輕量、處理 Cloudflare 403-then-redirect | 一般瀏覽、Cloudflare 挑戰頁 |
 | `screenshot_url` | Chromium（同上之掩飾） | JS 盡行而截其貌，書 PNG 於檔（不返 base64） | 覷 UI、驗版式、局中之頁 |
+| `detect_ui_elements` | ONNX (onnxruntime-node) | 求 UI 諸元之框（x,y,w,h），俾裁而察 | 定位、裁片、驗佈局 |
 | `camoufox_browse` | Firefox (Camoufox C++ patches) | C++ 級別指紋欺騙、不同指紋配置文件 | DataDome, PerimeterX, Turnstile |
 | `cloak_browse` | Chromium (CloakBrowser C++ patches) | **reCAPTCHA v3 (0.9 分)**, TLS 指紋偽造，行為模擬 | reCAPTCHA v3, Turnstile, 行為檢測 |
 

@@ -13,6 +13,8 @@ the host.
 - [usage.md](usage.md) — running the agent with the `pa` launcher, mounts, env toggles
 - [runtimes.md](runtimes.md) — how mise manages Ruby/Node/Python and how the cache works
 - [yousoro-browsing.md](yousoro-browsing.md) — the `pa-yousoro-browse` tool: fingerprint masking, Cloudflare handling, headed/Xvfb, what it does/doesn't fix
+- [screenshot.md](screenshot.md) — the `screenshot_url` tool: renders a URL with JS and writes a PNG **to a file**, where that file goes, and why it refuses to overwrite or to capture a bot-block page
+- [uitag.md](uitag.md) — the `detect_ui_elements` tool: pixel bounding boxes for UI elements so an agent can crop and inspect regions; why it is ONNX-in-Node rather than the 3 GB Python package, and the measured fidelity gap
 - [rag.md](rag.md) — the `pa-rag` extension: automatic local hybrid index in `.pirag/`, what gets indexed (dotfiles, past sessions), the size gate, and how it reuses `pi-local-rag` without forking
 - [building.md](building.md) — `build.sh`, dual-arch builds, and the GitHub workflow
 - [testing.md](testing.md) — `smoketest.sh` and what it verifies
