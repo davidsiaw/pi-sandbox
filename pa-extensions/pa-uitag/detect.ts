@@ -35,9 +35,15 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
-// Both of these are resolved from pa-rag's node_modules, which the image
-// already installs. They are NOT declared as dependencies of this extension —
-// duplicating onnxruntime-node (93 MB) would be absurd.
+// onnxruntime-node is deliberately BORROWED from pa-rag rather than declared
+// here: it is 31 MB after install-rag-model.sh prunes it to Linux-CPU-only, and
+// a second copy would buy nothing. This is a conscious, documented exception.
+//
+// photon-node is NOT borrowed. It used to be, but pa-rag does not declare it
+// either — it arrives transitively via pi-local-rag, so a patch bump upstream
+// could drop it and silently break detect_ui_elements. At 2.2 MB it is far
+// cheaper to own than to gamble on, so it is a real dependency in this
+// extension's package.json and resolves by name from our own node_modules.
 const PA_RAG_MODULES = "/opt/pa/extensions/pa-rag/node_modules";
 // Repo-relative fallback so the selftest can run from a checkout.
 const LOCAL_RAG_MODULES = new URL("../pa-rag/node_modules", import.meta.url).pathname;
@@ -80,25 +86,59 @@ interface Deps {
 	photon: Any;
 }
 
-function loadDeps(): Deps {
-	const require = createRequire(import.meta.url);
+// biome-ignore lint/suspicious/noExplicitAny: createRequire's return type
+type Req = any;
+
+/** onnxruntime-node, borrowed from pa-rag. See the note at PA_RAG_MODULES. */
+function loadOrt(require: Req): Any {
 	let lastErr: unknown;
 	for (const root of [PA_RAG_MODULES, LOCAL_RAG_MODULES]) {
 		try {
 			const ort = require(`${root}/onnxruntime-node/dist/index.js`);
-			const photon = require(`${root}/@silvia-odwyer/photon-node/photon_rs.js`);
-			if (ort?.InferenceSession && photon?.PhotonImage) {
-				return { ort: ort.default ?? ort, photon: photon.default ?? photon };
-			}
+			if (ort?.InferenceSession) return ort.default ?? ort;
 		} catch (err) {
 			lastErr = err;
 		}
 	}
 	throw new Error(
-		"Could not load onnxruntime-node / photon-node from pa-rag's node_modules " +
+		"Could not load onnxruntime-node from pa-rag's node_modules " +
 			`(tried ${PA_RAG_MODULES} and ${LOCAL_RAG_MODULES}). ` +
 			`Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
 	);
+}
+
+/** photon-node, a declared dependency of this extension. */
+function loadPhoton(require: Req): Any {
+	let lastErr: unknown;
+	// Declared in package.json, so ordinary name resolution finds it in this
+	// extension's own node_modules.
+	try {
+		const photon = require("@silvia-odwyer/photon-node/photon_rs.js");
+		if (photon?.PhotonImage) return photon.default ?? photon;
+	} catch (err) {
+		lastErr = err;
+	}
+	// Fallback to pa-rag's transitive copy. Retained so a checkout that has not
+	// run `npm install` here still works; no longer the primary path, so an
+	// upstream pi-local-rag change cannot silently break this tool.
+	for (const root of [PA_RAG_MODULES, LOCAL_RAG_MODULES]) {
+		try {
+			const photon = require(`${root}/@silvia-odwyer/photon-node/photon_rs.js`);
+			if (photon?.PhotonImage) return photon.default ?? photon;
+		} catch (err) {
+			lastErr = err;
+		}
+	}
+	throw new Error(
+		"Could not load @silvia-odwyer/photon-node. It is a declared dependency of " +
+			"pa-uitag; run `npm install` in this extension directory. " +
+			`Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+	);
+}
+
+function loadDeps(): Deps {
+	const require = createRequire(import.meta.url);
+	return { ort: loadOrt(require), photon: loadPhoton(require) };
 }
 
 /** Cached session — loading a 36 MB model per call would be wasteful. */

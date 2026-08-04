@@ -81,7 +81,19 @@ auto_load: true
 - `scroll` ／ `scroll_wait_ms`——為懶載／無限捲之 feed（Reddit、Twitter 鏡）捲之。feed 始以 `scroll=5`。
 - `wait_ms`——JS 重之頁多候（試 `3000`+）。
 - `max_attempts`——遭擋則退避重試（默 4；勿改）。
-- `max_chars`——限返之頁文（默 8000）。
+- `max_chars`——內聯頁文之預算（默 8000）。`max_items`——內聯 `extract` 列之預算（默 50）。
+
+### 全文入檔，預覽而已
+
+每一取，其**全**文與**全**鏈必書於 `/tmp/pa-browse-<host>-<ts>.txt`，而告其徑。
+所返者实乃預覽；截斷自首而計，故**頁之尾唯存於檔**。
+
+- 報中明列兩段之行數（`extracted TSV lines a-b`、`page text lines c-d`），
+  可徑以 `read path="<其徑>" offset=<n>` 跳至尾，或 `rg -n "pattern" "<其徑>"` 搜之。
+- 鏈列存為 **TSV**（`text<TAB>href`，一行一筆），宜 `rg`、`cut`。
+- 與 pi 之 `bash` 具同理（其溢出入 `/tmp/pi-bash-*.log`）。檔隨匣而滋。
+
+**故見「truncated」勿忙提高 `max_chars` 重取——其文既在檔中，讀之即得。**
 
 具已掩自動化指紋、重試瞬擋，故 `blocked: true` 者，乃真不得過也。
 

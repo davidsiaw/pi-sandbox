@@ -148,7 +148,46 @@ fastest possible fetch.
 | `scroll_wait_ms` | 1500 | wait after each scroll pass |
 | `challenge_wait_ms` | 20000 | max wait for a Cloudflare interstitial to auto-solve and redirect |
 | `headed` | false | run headed Chromium behind a virtual X display (see below) |
-| `max_chars` | 8000 | truncate returned page text |
+| `max_chars` | 8000 | inline budget for page text (the full text is always cached) |
+| `max_items` | 50 | inline budget for the `extract` list (the full list is always cached) |
+
+## Output caching
+
+Every fetch writes its **complete** result to `/tmp/pa-browse-<host>-<ts>.txt`
+and reports the path. The inline result is only a preview.
+
+This fixes two separate ways output used to be lost:
+
+- `extract` was **uncapped**. `extract="a"` on a link-dense page emitted every
+  match into the context window — a Wikipedia article yields 483 links, i.e.
+  ~966 lines of tool result.
+- Page text was capped by `max_chars` and **the remainder was discarded**.
+  Truncation is head-first, so on a long page it is the *bottom* that vanishes —
+  the part `scroll` had just paid to load. Recovery meant re-fetching.
+
+The file has two labelled sections and the report gives their exact line ranges,
+so `read offset=` lands on data rather than a header:
+
+```
+--- Full content cached ---
+/tmp/pa-browse-en.wikipedia.org-20260804-181825-c97e.txt  (64 KB, 741 lines)
+  Sections: extracted TSV lines 2-484, page text lines 487-741
+  Truncation is head-first, so the TAIL is only in the file.
+  Tail:   read path="..." offset=641
+  Search: rg -n "pattern" "..."
+```
+
+The extract list is stored as **TSV** (`text<TAB>attr`, one record per line, tabs
+and newlines in link text collapsed to spaces) so `rg` and `cut` work on it
+directly. The inline preview keeps the numbered human-readable form.
+
+`/tmp` matches pi's own `bash` tool, which spills oversized output to
+`/tmp/pi-bash-<id>.log` the same way. Files die with the container, which is the
+right lifetime for a fetch. A cache write failure never fails the fetch — the
+preview is still returned, with a note saying the remainder is unavailable.
+
+This is why raising `max_chars` is rarely the right move: the content is already
+on disk.
 
 ## Headed mode + Xvfb
 

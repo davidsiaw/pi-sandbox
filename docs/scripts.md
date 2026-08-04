@@ -19,7 +19,13 @@ writable. Build once, push, run anywhere:
 docker build -t davidsiaw/pi-sandbox:latest .
 ```
 
-Build stages, in order:
+The build is multi-stage. `uitag-export` is a throwaway stage pinned to
+`--platform=$BUILDPLATFORM` that turns the pinned `uitag` PyPI wheel into
+`yolo-ui.onnx` (`export-uitag-model.sh`); only that 36 MB file is copied into the
+final image, leaving its ~1 GB torch/ultralytics toolchain behind. See
+[uitag.md](uitag.md).
+
+Final-image stages, in order:
 
 1. **System packages** (`install-system-deps.sh`) — build/runtime libraries.
 2. **Fixed system Node + pi** (`install-node-system.sh`, `install-pi.sh`) —
@@ -35,7 +41,9 @@ Build stages, in order:
    - `MISE_NOT_FOUND_AUTO_INSTALL=false` — do NOT silently compile a missing
      runtime when a shim is called; the agent installs versions explicitly.
 5. **Writable HOME + passwd/shadow appendable** (`setup-home.sh`).
-6. **Baked guidance + merge + resources** (`APPEND_SYSTEM.base.md`,
+6. **Baked guidance + merge + resources** — deliberately placed *below* the
+   slow third-party layers (CloakBrowser, global npm, auth2api) so that editing
+   an extension does not invalidate them (`APPEND_SYSTEM.base.md`,
    `merge-append-system.sh`, `pa-skills/`, `pa-extensions/`). The launcher
    stages any host `APPEND_SYSTEM.md` at `/opt/pa/APPEND_SYSTEM.host.md`; the
    merge script combines host (first) + base (second) into the

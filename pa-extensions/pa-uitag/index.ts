@@ -15,6 +15,9 @@
  * See detect.ts for why this is ONNX-in-Node rather than the uitag Python
  * package, and for the measured fidelity gap against the Python reference.
  *
+ * REGISTRATION IS CONDITIONAL: with no model baked (PA_UITAG_MODEL_URL unset at
+ * build time) the tool is not registered at all. See resolveModelPath below.
+ *
  * SCOPE, stated plainly: the model has 8 coarse classes, so it says
  * "Input_Elements" where you might want "checkbox" vs "date picker", and it
  * extracts NO text. It is a region locator. On synthetic HTML pages it returns
@@ -33,22 +36,19 @@ const BAKED_MODEL = "/opt/pa/models/uitag/yolo-ui.onnx";
 /** Env override, mainly for the selftest and for trying a quantized model. */
 const MODEL_ENV = "PA_UITAG_MODEL";
 
-function resolveModelPath(): string {
+/**
+ * Locate a usable model, or return null when there is none.
+ *
+ * Deliberately does NOT throw: the caller decides at load time whether to
+ * register the tool at all. Registering `detect_ui_elements` without a model
+ * puts a capability in the system prompt that fails on every single call --
+ * the model burns a tool call to discover the tool is a lie. Better to not
+ * offer it. See scripts/install-uitag-model.sh (PA_UITAG_MODEL_URL build arg).
+ */
+function resolveModelPath(): string | null {
 	const override = process.env[MODEL_ENV];
-	if (override) {
-		if (!existsSync(override)) {
-			throw new Error(`${MODEL_ENV} points at ${override}, which does not exist.`);
-		}
-		return override;
-	}
-	if (!existsSync(BAKED_MODEL)) {
-		throw new Error(
-			`uitag model not found at ${BAKED_MODEL}. The image may have been built ` +
-				`without it (see scripts/install-uitag-model.sh), or set ${MODEL_ENV} ` +
-				`to a local .onnx file.`,
-		);
-	}
-	return BAKED_MODEL;
+	if (override) return existsSync(override) ? override : null;
+	return existsSync(BAKED_MODEL) ? BAKED_MODEL : null;
 }
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"]);
@@ -107,6 +107,25 @@ const PARAMS = Type.Object({
 });
 
 export default function paUitagExtension(pi: ExtensionAPI) {
+	const modelPath = resolveModelPath();
+	if (!modelPath) {
+		// No model -> no tool. Silent for the common case (image built without
+		// PA_UITAG_MODEL_URL): nothing was ever promised, so nothing is missing.
+		// But if the user set PA_UITAG_MODEL explicitly they asked for this tool,
+		// and a typo'd path must not vanish silently -- say so once, at startup.
+		const override = process.env[MODEL_ENV];
+		if (override) {
+			pi.on("session_start", (_event, ctx) => {
+				ctx.ui.notify(
+					`${MODEL_ENV} points at ${override}, which does not exist. ` +
+						`detect_ui_elements is disabled.`,
+					"warning",
+				);
+			});
+		}
+		return;
+	}
+
 	pi.registerTool({
 		name: "detect_ui_elements",
 		label: "Detect UI Elements",
@@ -128,11 +147,11 @@ export default function paUitagExtension(pi: ExtensionAPI) {
 		parameters: PARAMS,
 		async execute(_toolCallId, params, _signal, onUpdate, ctx) {
 			// --- Resolve inputs ------------------------------------------------
+			// modelPath was resolved and validated at load time; the tool is not
+			// registered at all when no model is present.
 			let imagePath: string;
-			let modelPath: string;
 			try {
 				imagePath = resolveInput(ctx.cwd, params.image);
-				modelPath = resolveModelPath();
 			} catch (err) {
 				return {
 					content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],

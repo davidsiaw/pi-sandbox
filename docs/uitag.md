@@ -121,28 +121,54 @@ INT8 dynamic quantization shrinks the model 36 MB → 9.4 MB but costs recall
 
 ## Baking the model
 
-The model is **fetched at build time**, not committed — a 36 MB binary in git
-bloats every clone forever (pa-rag sets the same precedent). Upstream publishes
-no stable URL for the ONNX export, so you host it:
+The model is **built at image-build time**, not committed — a 36 MB binary in git
+bloats every clone forever (pa-rag sets the same precedent). It requires no
+setup: the `uitag-export` stage in the Dockerfile does the whole thing.
+
+```
+uitag-export stage (throwaway, runs on $BUILDPLATFORM)
+  │  download pinned uitag 0.6.0 wheel from PyPI, verify sha256
+  │  unzip uitag/models/yolo-ui.pt   (no `pip install uitag`)
+  │  pip install torch-cpu + ultralytics  (~1GB, discarded)
+  │  assert the 9 class names match detect.ts, then export ONNX
+  └─► /out/yolo-ui.onnx  ──COPY──►  /opt/pa/models/uitag/
+```
+
+Why export rather than download: upstream publishes no ONNX build, and the only
+public mirror of the weights
+([laywens/uitag-yolo11s-ui-detect-v1](https://huggingface.co/laywens/uitag-yolo11s-ui-detect-v1))
+is a **gated** HF repo — it needs an account and an accepted licence click, so an
+unauthenticated build cannot fetch it, and it ships the `.pt` anyway. The weights
+themselves are freely redistributable inside the pure-python PyPI wheel.
+
+Why `--platform=$BUILDPLATFORM`: an ONNX graph is architecture-neutral, so the
+arm64 leg reuses the artifact built natively on the builder instead of running a
+torch install under QEMU.
+
+**Cost:** a cold build pays ~1 GB of torch/ultralytics downloads in that stage.
+It is cached (keyed on the pinned wheel hash and pinned tool versions) and
+nothing from it reaches the final image. To skip it, host the `.onnx` yourself:
 
 ```bash
-pip install uitag
-python -c "from ultralytics import YOLO; \
-  YOLO('<site-packages>/uitag/models/yolo-ui.pt') \
-    .export(format='onnx', imgsz=640, simplify=True, opset=17)"
-# host yolo-ui.onnx, then:
 PA_UITAG_MODEL_URL=https://your-host/yolo-ui.onnx sh build.sh
 ```
 
-With `PA_UITAG_MODEL_URL` unset the bake **skips with a clear message** and
-`detect_ui_elements` reports "model not found" at runtime. The script rejects an
-HTML error page masquerading as a model (a 404 page saved as `.pt` cost real
-debugging time during development) and verifies the model loads with the
-expected output shape `[1,13,8400]` before accepting it.
+CI also reads that from the optional `PA_UITAG_MODEL_URL` **repository variable**
+(Settings → Secrets and variables → Actions → Variables); unset is fine and is
+the normal case.
 
-**Licensing:** uitag is MIT and GroundCUA is MIT, but redistributing the derived
-`.onnx` inside a public image is a call to make consciously — hence the opt-in
-build arg rather than a hardcoded URL.
+If neither source yields a model the bake **skips with a clear message** and the
+extension **does not register `detect_ui_elements` at all** — an advertised tool
+that fails on every call is worse than an absent one, because the model spends a
+call discovering it. `smoketest.sh` asserts the model file is present, so this
+cannot regress silently. The script also rejects an HTML error page masquerading
+as a model (a 404 page saved as `.pt` cost real debugging time during
+development) and verifies the model loads with the expected output shape
+`[1,13,8400]` before accepting it.
+
+**Licensing:** uitag is MIT and GroundCUA is MIT, so redistributing the derived
+`.onnx` is permitted. The export stage writes a `LICENSE_NOTICE` next to the
+model recording both, so attribution ships with the image.
 
 ## Testing
 

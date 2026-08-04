@@ -102,8 +102,13 @@ jobs:
           context: .
           platforms: linux/amd64
           load: true
+          # PA_UITAG_MODEL_URL is OPTIONAL: leave the repo variable unset and the
+          # uitag-export stage builds yolo-ui.onnx from the pinned PyPI wheel.
+          # Set it (Settings -> Secrets and variables -> Actions -> Variables) to
+          # point at a self-hosted copy and skip that stage's ~1GB toolchain.
           build-args: |
             PI_VERSION=${{ needs.check.outputs.pi_version }}
+            PA_UITAG_MODEL_URL=${{ vars.PA_UITAG_MODEL_URL }}
           tags: davidsiaw/pi-sandbox:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -119,6 +124,7 @@ jobs:
           push: true
           build-args: |
             PI_VERSION=${{ needs.check.outputs.pi_version }}
+            PA_UITAG_MODEL_URL=${{ vars.PA_UITAG_MODEL_URL }}
           tags: |
             davidsiaw/pi-sandbox:latest
             davidsiaw/pi-sandbox:${{ needs.check.outputs.pi_version }}

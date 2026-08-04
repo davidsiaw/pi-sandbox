@@ -20,21 +20,30 @@ set -euo pipefail
 #
 # WHY THE MODEL IS FETCHED, NOT COMMITTED
 #   A 36MB binary in git bloats every clone forever. pa-rag sets the precedent:
-#   fetch at build time into /opt/pa/models. The URL is pinned and the file is
-#   size- and signature-checked below; a silent HTML error page must not be
+#   produce it at build time into /opt/pa/models. Whatever the source, the file
+#   is size- and signature-checked below; a silent HTML error page must not be
 #   allowed to masquerade as a model (that exact failure -- a 404 page saved as
 #   .pt -- cost real debugging time during development).
 #
+# WHERE THE MODEL COMES FROM (in order of preference)
+#   1. PA_UITAG_MODEL_URL, if set -- you host your own copy and skip the export.
+#   2. /tmp/uitag-prebuilt/yolo-ui.onnx, produced by the `uitag-export` builder
+#      stage (see scripts/export-uitag-model.sh). This is the default path and
+#      needs no hosting, no account, and no manual step.
+#   3. Nothing -- skip the bake. pa-uitag then does not register
+#      detect_ui_elements at all, rather than advertising a dead tool.
+#
 # PROVENANCE / LICENSING NOTE
-#   uitag is MIT and GroundCUA is MIT, but redistributing the derived .onnx
-#   inside a public image is a call the maintainer should make consciously.
-#   PA_UITAG_MODEL_URL lets you point at your own copy.
+#   uitag is MIT and GroundCUA is MIT, so redistributing the derived .onnx is
+#   permitted; the export stage writes a LICENSE_NOTICE alongside it that is
+#   installed next to the model so the attribution ships with the image.
 
 MODEL_DIR=/opt/pa/models/uitag
 MODEL_PATH="$MODEL_DIR/yolo-ui.onnx"
 EXT_DIR=/opt/pa/extensions/pa-uitag
+PREBUILT_DIR=/tmp/uitag-prebuilt
 
-# Override to self-host the export. Default is the upstream mirror.
+# Override to self-host the export instead of building it in-image.
 MODEL_URL="${PA_UITAG_MODEL_URL:-}"
 
 if [ ! -d "$EXT_DIR" ]; then
@@ -42,28 +51,28 @@ if [ ! -d "$EXT_DIR" ]; then
   exit 0
 fi
 
-if [ -z "$MODEL_URL" ]; then
+mkdir -p "$MODEL_DIR"
+
+if [ -n "$MODEL_URL" ]; then
+  echo "fetching uitag model from $MODEL_URL"
+  curl -fsSL --retry 3 -o "$MODEL_PATH.tmp" "$MODEL_URL"
+elif [ -f "$PREBUILT_DIR/yolo-ui.onnx" ]; then
+  echo "using uitag model exported by the uitag-export build stage"
+  cp "$PREBUILT_DIR/yolo-ui.onnx" "$MODEL_PATH.tmp"
+  [ -f "$PREBUILT_DIR/LICENSE_NOTICE" ] && cp "$PREBUILT_DIR/LICENSE_NOTICE" "$MODEL_DIR/"
+else
   cat >&2 <<'EOF'
-install-uitag-model.sh: no PA_UITAG_MODEL_URL set.
+install-uitag-model.sh: no model available.
 
-The uitag ONNX model is not published at a stable public URL by upstream; it is
-produced by exporting the .pt bundled in the `uitag` wheel:
+Neither PA_UITAG_MODEL_URL nor the uitag-export build stage produced a model,
+which means the Dockerfile was changed or the stage was skipped. Skipping the
+bake: pa-uitag will not register detect_ui_elements at all.
 
-    pip install uitag
-    python -c "from ultralytics import YOLO; \
-      YOLO('<site-packages>/uitag/models/yolo-ui.pt') \
-        .export(format='onnx', imgsz=640, simplify=True, opset=17)"
-
-Host the resulting yolo-ui.onnx (36MB) and pass its URL as the
-PA_UITAG_MODEL_URL build arg. Skipping the bake: detect_ui_elements will report
-a clear "model not found" error at runtime until this is configured.
+To restore it, either let the uitag-export stage run (the default), or host a
+yolo-ui.onnx yourself and pass PA_UITAG_MODEL_URL.
 EOF
   exit 0
 fi
-
-mkdir -p "$MODEL_DIR"
-echo "fetching uitag model from $MODEL_URL"
-curl -fsSL --retry 3 -o "$MODEL_PATH.tmp" "$MODEL_URL"
 
 # An HTML error page or a truncated download must fail loudly here rather than
 # at runtime. ONNX files are protobuf; they do not start with '<'.

@@ -21,7 +21,8 @@
  */
 
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -95,6 +96,96 @@ check(
 check("looksBlocked true on 403", H.looksBlocked(403, "anything"));
 check("looksBlocked true on CAPTCHA text", H.looksBlocked(200, "Verification required. I'm not a robot"));
 check("looksBlocked false on normal 200", !H.looksBlocked(200, "Welcome to the site"));
+
+// --- (1b) Output caching: the context-blowout guard ------------------------
+// cache.ts is imported directly (node strips types natively) rather than
+// regex-scraped like the stealth helpers above -- it is a normal module with no
+// browser dependencies, so there is no reason to eval it.
+//
+// What these guard: an UNCAPPED extract list used to emit every match straight
+// into the context window, and page text was truncated with the remainder
+// discarded. Truncation is head-first, so a long page lost its BOTTOM -- the
+// part scrolling had just paid to load.
+const C = await import(join(here, "cache.ts"));
+
+{
+	const body = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join("\n");
+	const t = C.truncateHead(body, 100);
+	check("truncateHead reports true totals, not truncated ones", t.totalLines === 500, `got ${t.totalLines}`);
+	check("truncateHead actually truncates", t.truncated && t.content.length <= 100);
+	check("truncateHead never cuts mid-line", !t.truncated || !t.content.endsWith(" ") && body.startsWith(t.content));
+	check("truncateHead keeps whole lines only", t.content.split("\n").every((l) => /^line \d+$/.test(l)));
+
+	const short = C.truncateHead("tiny", 8000);
+	check("truncateHead passes short content through untouched", !short.truncated && short.content === "tiny");
+
+	// A single line longer than the budget has no newline to back off to; a hard
+	// cut is the only option, and it must not loop or return nothing.
+	const huge = C.truncateHead("x".repeat(5000), 100);
+	check("truncateHead hard-cuts a single over-long line", huge.truncated && huge.content.length === 100);
+}
+
+{
+	// TSV is one record per line; embedded tabs/newlines in link text would break
+	// every downstream rg/cut, so they must collapse.
+	const line = C.tsvLine({ text: "a\tb\nc  ", attr: "https://x/y" });
+	check("tsvLine collapses tabs/newlines in text", line === "a b c\thttps://x/y", JSON.stringify(line));
+	check("tsvLine omits the tab when there is no attr", C.tsvLine({ text: "solo" }) === "solo");
+}
+
+{
+	const extracted = Array.from({ length: 300 }, (_, i) => ({
+		text: `link ${i + 1}`,
+		attr: `https://example.com/${i + 1}`,
+	}));
+	const text = Array.from({ length: 400 }, (_, i) => `body line ${i + 1}`).join("\n");
+	const dir = mkdtempSync(join(tmpdir(), "pa-browse-selftest-"));
+	try {
+		const info = C.writeCache(dir, "https://www.example.com/some/page", {
+			extract: "a",
+			extractAttr: "href",
+			extracted,
+			text,
+		});
+		const onDisk = readFileSync(info.path, "utf8");
+		const fileLines = onDisk.split("\n");
+
+		check("cache filename carries the host", /pa-browse-example\.com-/.test(info.path), info.path);
+		check("cache holds every extracted item", extracted.every((e) => onDisk.includes(e.attr)));
+
+		// The contract that matters: the reported ranges must actually index the
+		// data, or `read offset=` lands on the wrong thing.
+		const [exStart, exEnd] = info.extractedRange;
+		check("extractedRange spans exactly the TSV rows", exEnd - exStart + 1 === 300, `${exStart}-${exEnd}`);
+		check("extractedRange start points at the first item", fileLines[exStart - 1] === "link 1\thttps://example.com/1", fileLines[exStart - 1]);
+		check("extractedRange end points at the last item", fileLines[exEnd - 1] === "link 300\thttps://example.com/300", fileLines[exEnd - 1]);
+
+		const [ptStart, ptEnd] = info.pageTextRange;
+		check("pageTextRange spans exactly the page text", ptEnd - ptStart + 1 === 400, `${ptStart}-${ptEnd}`);
+		check("pageTextRange start points at the first text line", fileLines[ptStart - 1] === "body line 1", fileLines[ptStart - 1]);
+
+		// The whole reason this exists: what the inline preview drops must still be
+		// reachable in the file.
+		const preview = C.truncateHead(text, 200);
+		check("preview omits the tail", !preview.content.includes("body line 400"));
+		check("cache file still has the tail the preview dropped", fileLines[ptEnd - 1] === "body line 400", fileLines[ptEnd - 1]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+{
+	// Degenerate inputs must not produce bogus ranges.
+	const dir = mkdtempSync(join(tmpdir(), "pa-browse-selftest-"));
+	try {
+		const empty = C.writeCache(dir, "not a url", { text: "" });
+		check("empty page text yields no pageTextRange", empty.pageTextRange === undefined);
+		check("no extract yields no extractedRange", empty.extractedRange === undefined);
+		check("unparseable URL still produces a filename", /pa-browse-page-/.test(empty.path), empty.path);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
 // --- (2) Fingerprint init script in a real Chromium page -------------------
 const require = createRequire(import.meta.url);

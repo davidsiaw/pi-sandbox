@@ -107,6 +107,21 @@ run 'mise ls node' | grep -q '20\.' && pass "cache volume persists node@20" || f
 run 'sudo -n true 2>&1 && echo SUDO_OK' | grep -q SUDO_OK \
   && pass "passwordless sudo works" || fail "passwordless sudo failed"
 
+# /etc/passwd must be world-writable (arbitrary uid appends its own line at
+# startup); /etc/shadow must NOT be. The shadow entry carries no uid, so it is
+# baked at build time and the file stays root-only. These two run together
+# because sudo breaks if the shadow ENTRY is missing -- the check above would
+# catch that -- and the whole point is keeping the entry while dropping write
+# access to the file.
+# Tested as the property that matters, from the unprivileged uid, rather than by
+# pattern-matching an octal mode string.
+run 'test -w /etc/passwd && echo PASSWD_WRITABLE' | grep -q PASSWD_WRITABLE \
+  && pass "/etc/passwd is writable (arbitrary uid can add itself)" || fail "/etc/passwd not writable"
+run 'test -w /etc/shadow && echo SHADOW_WRITABLE || echo SHADOW_PROTECTED' | grep -q SHADOW_PROTECTED \
+  && pass "/etc/shadow is NOT writable by the container user" || fail "/etc/shadow is world-writable"
+run 'sudo -n grep -c "^agent:" /etc/shadow' | grep -q '^1$' \
+  && pass "/etc/shadow has the agent entry (sudo PAM needs it)" || fail "/etc/shadow missing agent entry"
+
 ver="$(run 'cat /usr/lib/node_modules/@earendil-works/pi-coding-agent/package.json' | grep -oE '"version": *"[^"]+"' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
 run 'cat "$HOME/.pi/agent/settings.json"' | grep -q "\"lastChangelogVersion\": \"${ver}\"" \
   && pass "settings seeded with current version (no changelog)" || fail "settings not seeded with pi version"
@@ -211,6 +226,21 @@ else
   fail "pa-screenshot selftest failed"
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
+
+# The uitag model must be baked, exactly like the pa-rag one. This is the check
+# that was missing when detect_ui_elements shipped registered-but-modelless: the
+# selftest below SKIPs without a model, so on its own it stays green while the
+# published image quietly lacks the tool.
+run 'test -f /opt/pa/models/uitag/yolo-ui.onnx && echo UITAG_MODEL_BAKED' | grep -q UITAG_MODEL_BAKED \
+  && pass "pa-uitag model baked into image" || fail "pa-uitag model missing from /opt/pa/models/uitag"
+
+# photon must be pa-uitag's OWN dependency. It used to be borrowed from pa-rag,
+# where it exists only transitively via pi-local-rag -- so an upstream patch bump
+# could have dropped it and silently killed detect_ui_elements. onnxruntime-node
+# is still borrowed on purpose (31 MB); photon is 2.2 MB and not worth the risk.
+run 'test -d /opt/pa/extensions/pa-uitag/node_modules/@silvia-odwyer/photon-node && echo PHOTON_OWNED' \
+  | grep -q PHOTON_OWNED \
+  && pass "pa-uitag owns its photon dep (not borrowed from pa-rag)" || fail "pa-uitag photon dep missing"
 
 # pa-uitag guard: box geometry (in-bounds, positive area, integer coords) and
 # the contract that matters -- cropping by a reported box yields exactly that

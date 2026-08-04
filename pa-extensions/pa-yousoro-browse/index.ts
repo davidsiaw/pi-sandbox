@@ -29,8 +29,10 @@
  * at /opt/ms-playwright. See docs/yousoro-browsing.md.
  */
 
+import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { type CacheInfo, truncateHead, writeCache } from "./cache.ts";
 import {
 	type Chromium,
 	type VirtualDisplay,
@@ -57,6 +59,7 @@ interface ExtractedItem {
 }
 
 interface FetchOptions {
+
 	url: string;
 	extract?: string;
 	extractAttr?: string;
@@ -284,7 +287,17 @@ const PARAMS = Type.Object({
 	),
 	max_chars: Type.Optional(
 		Type.Number({
-			description: "Truncate returned page text to this many characters. Default 8000.",
+			description:
+				"Inline budget for page text, in characters. Default 8000. The COMPLETE " +
+				"text is always written to the cache file regardless, so raising this is " +
+				"rarely necessary \u2014 read or grep the file instead.",
+		}),
+	),
+	max_items: Type.Optional(
+		Type.Number({
+			description:
+				"Inline budget for the `extract` list, in items. Default 50. The COMPLETE " +
+				"list is always written to the cache file as TSV.",
 		}),
 	),
 });
@@ -303,7 +316,9 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			"browsers with 403/429/503 (e.g. Reddit, Cloudflare-fronted sites). Returns " +
 			"page text, and optionally innerText (and an attribute such as href) of " +
 			"elements matching a CSS selector — use extract=\"a\" extract_attr=\"href\" " +
-			"to collect links with their text.",
+			"to collect links with their text. The COMPLETE result is always cached to a " +
+			"file under /tmp and its path reported, so anything truncated from the inline " +
+			"preview can be recovered with read or rg instead of re-fetching.",
 		promptSnippet: "Fetch a web page past bot-blocks using the yousoro headless browser",
 		promptGuidelines: [
 			"CRITICAL: Before using yousoro_browse for search/browsing tasks, load the 'web-search' skill which contains essential guidance on search engines, BFS strategies, and blocked-site handling.",
@@ -311,6 +326,8 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			"Prefer yousoro_browse over ad-hoc Playwright scripts for one-off page reads.",
 			"Set yousoro_browse scroll>0 for infinite-scroll feeds (e.g. Reddit) so lazy-loaded items are captured.",
 			'Use yousoro_browse with extract="a" extract_attr="href" to collect candidate links (text + absolute URL) from a page before deciding which to follow.',
+			"yousoro_browse always caches the full page text and full extract list to a /tmp file and reports the path. The inline output is only a preview: when it reports truncation, read or rg that file rather than re-fetching with a bigger max_chars.",
+			"Page-text truncation is head-first, so the BOTTOM of a long page is what the preview omits. The report gives total line counts \u2014 use read with offset to jump to the tail of the cache file.",
 		],
 		parameters: PARAMS,
 		async execute(_toolCallId, params, signal, onUpdate) {
@@ -343,6 +360,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			}
 
 			const maxChars = params.max_chars ?? 8000;
+			const maxItems = params.max_items ?? 50;
 			const onProgress = (msg: string) =>
 				onUpdate?.({ content: [{ type: "text", text: msg }] });
 
@@ -384,26 +402,80 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 				`Blocked: ${result.blocked}\n` +
 				`Title: ${result.title}\n`;
 
+			// Cache the COMPLETE result before building the preview, so nothing the
+			// preview drops is lost. A cache failure must not fail the fetch: the
+			// inline preview is still useful, so degrade and say so.
+			let cache: CacheInfo | undefined;
+			let cacheError: string | undefined;
+			try {
+				cache = writeCache(tmpdir(), result.finalUrl, {
+					extract: params.extract,
+					extractAttr: params.extract_attr,
+					extracted: result.extracted,
+					text: result.text,
+				});
+			} catch (err) {
+				cacheError = err instanceof Error ? err.message : String(err);
+			}
+
 			const parts: string[] = [header];
 
 			if (result.extracted) {
-				const lines = result.extracted.map((it, i) => {
+				const total = result.extracted.length;
+				const shown = result.extracted.slice(0, maxItems);
+				const lines = shown.map((it, i) => {
 					const label = it.text || "(no text)";
 					return params.extract_attr && it.attr !== undefined
 						? `${i + 1}. ${label}\n   [${params.extract_attr}] ${it.attr}`
 						: `${i + 1}. ${label}`;
 				});
-				parts.push(
-					`\nExtracted ${result.extracted.length} element(s) for selector ` +
-						`"${params.extract}"` +
-						(params.extract_attr ? ` (attr: ${params.extract_attr})` : "") +
-						`:\n${lines.join("\n")}`,
-				);
+				const heading =
+					`\nExtracted ${total} element(s) for selector "${params.extract}"` +
+					(params.extract_attr ? ` (attr: ${params.extract_attr})` : "") +
+					(total > shown.length ? ` \u2014 showing first ${shown.length}` : "") +
+					":";
+				parts.push(`${heading}\n${lines.join("\n")}`);
 			}
 
-			const pageText = result.text.slice(0, maxChars);
-			const truncated = result.text.length > maxChars;
-			parts.push(`\n--- Page text${truncated ? " (truncated)" : ""} ---\n${pageText}`);
+			const page = truncateHead(result.text, maxChars);
+			const pageHeading = page.truncated
+				? `\n--- Page text (showing ${page.shownChars} of ${page.totalChars} chars; ` +
+					`lines 1-${page.shownLines} of ${page.totalLines}) ---`
+				: "\n--- Page text ---";
+			parts.push(`${pageHeading}\n${page.content}`);
+
+			// The footer is the whole point: it tells the model what it did NOT see
+			// and hands it ready-to-run commands to get the rest.
+			if (cache) {
+				const kb = Math.max(1, Math.round(cache.bytes / 1024));
+				const foot: string[] = [
+					"\n--- Full content cached ---",
+					`${cache.path}  (${kb} KB, ${cache.totalLines} lines)`,
+				];
+				const sections: string[] = [];
+				if (cache.extractedRange) {
+					sections.push(
+						`extracted TSV lines ${cache.extractedRange[0]}-${cache.extractedRange[1]}`,
+					);
+				}
+				if (cache.pageTextRange) {
+					sections.push(`page text lines ${cache.pageTextRange[0]}-${cache.pageTextRange[1]}`);
+				}
+				if (sections.length > 0) foot.push(`  Sections: ${sections.join(", ")}`);
+				if (page.truncated || (result.extracted?.length ?? 0) > maxItems) {
+					foot.push(
+						`  Truncation is head-first, so the TAIL is only in the file.`,
+						`  Tail:   read path="${cache.path}" offset=${Math.max(1, cache.totalLines - 100)}`,
+						`  Search: rg -n "pattern" "${cache.path}"`,
+					);
+				}
+				parts.push(foot.join("\n"));
+			} else {
+				parts.push(
+					`\n--- Full content NOT cached ---\nCould not write the cache file: ${cacheError}.\n` +
+						`Anything truncated above is unavailable without re-fetching.`,
+				);
+			}
 
 			return {
 				content: [{ type: "text", text: parts.join("\n") }],
@@ -414,6 +486,10 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 					attempts: result.attempts,
 					blocked: result.blocked,
 					extractedCount: result.extracted?.length,
+					cachePath: cache?.path,
+					cacheLines: cache?.totalLines,
+					textTruncated: page.truncated,
+					totalChars: page.totalChars,
 				},
 				isError: result.blocked,
 			};

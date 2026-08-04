@@ -1,4 +1,21 @@
 # syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# Stage: uitag-export -- produce yolo-ui.onnx, then throw the toolchain away.
+#
+# Pinned to $BUILDPLATFORM on purpose. An ONNX graph is architecture-neutral, so
+# the arm64 leg of the multi-arch build can reuse the artifact built natively on
+# the builder rather than running a torch install under QEMU emulation.
+#
+# ~1GB of torch/ultralytics lives here and nowhere else; the final image gets a
+# single 36MB file. See scripts/export-uitag-model.sh for why the model is
+# exported rather than downloaded (upstream ships no ONNX; the only weights
+# mirror is a gated HF repo).
+# ---------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM python:3.13-slim AS uitag-export
+COPY scripts/export-uitag-model.sh /tmp/export-uitag-model.sh
+RUN bash /tmp/export-uitag-model.sh /out
+
 FROM debian:trixie-slim
 
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -44,15 +61,6 @@ COPY scripts/install-cloakbrowser.sh /tmp/install-cloakbrowser.sh
 RUN CLOAKBROWSER_VERSION="${CLOAKBROWSER_VERSION}" bash /tmp/install-cloakbrowser.sh \
  && rm /tmp/install-cloakbrowser.sh
 
-COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
-COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
-COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
-COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
-RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
-
-COPY pa-skills /opt/pa/skills
-COPY pa-extensions /opt/pa/extensions
-
 # Install CloakBrowser npm package globally (for Node API access)
 RUN npm install -g cloakbrowser playwright-core
 
@@ -75,6 +83,22 @@ RUN git clone --depth 1 https://github.com/AmazingAng/auth2api /opt/auth2api && 
     chmod +x /usr/local/bin/auth2api && \
     rm -rf /opt/auth2api/.git /opt/auth2api/src /opt/auth2api/tests /tmp/patch-auth2api.sh
 
+# ---------------------------------------------------------------------------
+# Everything ABOVE this line is third-party and slow to build (apt, node,
+# Chromium, mise, CloakBrowser, auth2api). Everything BELOW is this repo's own
+# source, which changes constantly. Keep that order: these COPYs used to sit
+# near the top, so editing one line of one extension invalidated the auth2api
+# clone+build, the global npm installs, and the 23MB model bake underneath it.
+# ---------------------------------------------------------------------------
+COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
+COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
+COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
+COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
+RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
+
+COPY pa-skills /opt/pa/skills
+COPY pa-extensions /opt/pa/extensions
+
 # Install dependencies for pa-cloakbrowser extension
 RUN cd /opt/pa/extensions/pa-cloakbrowser && npm install
 COPY scripts/install-extension-deps.sh /tmp/install-extension-deps.sh
@@ -86,12 +110,14 @@ COPY scripts/install-rag-model.sh /tmp/install-rag-model.sh
 RUN bash /tmp/install-rag-model.sh && rm /tmp/install-rag-model.sh
 
 # Bake the pa-uitag UI-element detection model (ONNX). Runs after pa-rag because
-# it reuses that extension's onnxruntime-node to verify the model loads. Skips
-# with a clear message when PA_UITAG_MODEL_URL is unset.
+# it reuses that extension's onnxruntime-node to verify the model loads. Takes
+# the artifact from the uitag-export stage by default; PA_UITAG_MODEL_URL
+# overrides it with a self-hosted copy.
 ARG PA_UITAG_MODEL_URL=
+COPY --from=uitag-export /out/ /tmp/uitag-prebuilt/
 COPY scripts/install-uitag-model.sh /tmp/install-uitag-model.sh
 RUN PA_UITAG_MODEL_URL="${PA_UITAG_MODEL_URL}" bash /tmp/install-uitag-model.sh \
- && rm /tmp/install-uitag-model.sh
+ && rm -rf /tmp/install-uitag-model.sh /tmp/uitag-prebuilt
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/start-auth2api.sh /usr/local/bin/start-auth2api.sh
