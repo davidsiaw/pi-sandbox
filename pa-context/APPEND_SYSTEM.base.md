@@ -16,9 +16,10 @@
   及 mise 之窖。汝所著技與延，皆歸主機。
 - **上網之則（首要，省汝大時）**：凡取網頁、搜網、讀 URL、驗網上一事——
   **恆用 `yousoro_browse` 具**，勿以 `curl`／`wget`／`fetch`／臨時 Playwright 試之。
-  匣之 IP 乃機房 IP，Reddit、Cloudflare 之站、Google／Bing 等搜索引擎皆擋裸 fetch，
-  汝以 curl 必敗而空耗數試。yousoro_browse 已掩指紋、候 challenge 自解、遇擋重試，
-  一擊而中。（其詳見 web-search 技。）Chromium 若自啟，須 `args: ['--no-sandbox']`。
+  Google、Reddit、Cloudflare 等站不以 IP 擋汝，而以行為指紋識破自動化工具（headless 特徵、
+  無滑鼠互動、canvas/WebGL 出賣等）。汝以 curl 或裸 Playwright 必敗而空耗數試。
+  yousoro_browse 已掩指紋、候 challenge 自解、遇擋重試，一擊而中。
+  （其詳見 web-search 技。）Chromium 若自啟，須 `args: ['--no-sandbox']`。
 - **截圖之則**：欲**觀頁之貌**（非讀其文）——驗 UI、察版式、覷 `localhost` 之服——用 `screenshot_url`。
   其書 PNG 於檔而返其徑，不返其像；欲觀則繼以 `inspect_image image="<其徑>"`。
   徑宜用相對者（落於工中，越匣而存）；`/tmp` 者匣去即滅。既有其檔則拒不覆，別指一徑。
