@@ -24,8 +24,12 @@ docker buildx inspect --bootstrap >/dev/null
 OUTPUT_ARGS=()
 if [ "$PUSH" = "1" ]; then
   OUTPUT_ARGS+=(--push)
+elif [ "${LOAD:-0}" = "1" ]; then
+  OUTPUT_ARGS+=(--load)
+  echo "LOAD=1 -> building single arch and loading into local docker"
 else
-  echo "PUSH=0 -> building both arches without pushing (image not loaded locally)"
+  echo "PUSH=0 -> building without pushing or loading (image not available locally)"
+  echo "  Set LOAD=1 to load into local docker, or PUSH=1 to push to registry"
 fi
 
 TAG_ARGS=()

@@ -1,0 +1,8 @@
+{
+  "name": "pa-anthropic-oauth",
+  "version": "1.0.0",
+  "description": "Anthropic OAuth provider via auth2api proxy",
+  "main": "index.ts",
+  "type": "module",
+  "dependencies": {}
+}

@@ -51,4 +51,12 @@ if [ -x /usr/local/bin/seed-trust.sh ]; then
   /usr/local/bin/seed-trust.sh || true
 fi
 
+# Start the auth2api watcher in a fully detached session.
+# It waits for token files in ~/.auth2api/ (written by the extension's
+# /login), then launches auth2api. Completely separate from pi's process
+# tree — setsid + /dev/null so it can never interfere with pi's TUI.
+if [ -x /usr/local/bin/start-auth2api.sh ]; then
+  setsid /usr/local/bin/start-auth2api.sh < /dev/null > /dev/null 2>&1 &
+fi
+
 exec "$@"

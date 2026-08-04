@@ -54,10 +54,29 @@ COPY pa-skills /opt/pa/skills
 COPY pa-extensions /opt/pa/extensions
 
 # Install CloakBrowser npm package globally (for Node API access)
-RUN npm install -g cloakbrowser playwright-core 2>/dev/null || true
+RUN npm install -g cloakbrowser playwright-core
+
+COPY scripts/patch-auth2api.sh /tmp/patch-auth2api.sh
+
+# Install auth2api (OAuth-to-API proxy for Claude/ChatGPT/Cursor).
+# Clone+build because the npm package omits dist/ and has no bin entry.
+# Handles billing headers, beta flags, SHA-256 signing, and all cloaking.
+# The pa-anthropic-oauth extension writes tokens to ~/.auth2api/ and the
+# start-auth2api.sh watcher (started by entrypoint.sh) launches this proxy.
+# Errors are NOT hidden — a failed clone must fail the build loudly.
+# We patch cloaking.ts to relocate third-party system prompts into the first
+# user message (without this, Anthropic rejects OAuth requests with a 400
+# "Third-party apps now draw from your extra usage").
+RUN git clone --depth 1 https://github.com/AmazingAng/auth2api /opt/auth2api && \
+    chmod +x /tmp/patch-auth2api.sh && \
+    /tmp/patch-auth2api.sh /opt/auth2api && \
+    cd /opt/auth2api && npm install && npm run build && npm prune --production && \
+    printf '#!/bin/bash\nexec node /opt/auth2api/dist/index.js "$@"\n' > /usr/local/bin/auth2api && \
+    chmod +x /usr/local/bin/auth2api && \
+    rm -rf /opt/auth2api/.git /opt/auth2api/src /opt/auth2api/tests /tmp/patch-auth2api.sh
 
 # Install dependencies for pa-cloakbrowser extension
-RUN cd /opt/pa/extensions/pa-cloakbrowser && npm install 2>/dev/null || true
+RUN cd /opt/pa/extensions/pa-cloakbrowser && npm install
 COPY scripts/install-extension-deps.sh /tmp/install-extension-deps.sh
 RUN bash /tmp/install-extension-deps.sh && rm /tmp/install-extension-deps.sh
 
@@ -75,7 +94,8 @@ RUN PA_UITAG_MODEL_URL="${PA_UITAG_MODEL_URL}" bash /tmp/install-uitag-model.sh 
  && rm /tmp/install-uitag-model.sh
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh
+COPY scripts/start-auth2api.sh /usr/local/bin/start-auth2api.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start-auth2api.sh
 
 ARG PI_VERSION=latest
 ENV PI_VERSION=${PI_VERSION}
