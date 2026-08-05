@@ -381,18 +381,23 @@ function formatRemaining(resetsAt: string | null): string {
   return `${h}h${m.toString().padStart(2, "0")}m`;
 }
 
-const BAR_CHARS = "█▉▊▋▌▍▎▏░";
+// Two states only. The eighth-width partials (▉▊▋▌▍▎▏) are left-aligned
+// glyphs narrower than the cell they sit in, so a partially filled cell renders
+// as a sliver with visible gaps either side of it -- the bar looks broken rather
+// than partly full. Rounding to whole cells costs at most half a cell of
+// precision on a percentage that is already rounded for display.
+const BAR_FULL = "█";
+const BAR_EMPTY = "░";
 
 function buildBar(filled: number, cells: number): string {
   if (cells < 1) return "";
-  const clamped = Math.max(0, Math.min(1, filled));
-  const totalEighths = Math.round(clamped * cells * 8);
-  let bar = "";
-  for (let i = 0; i < cells; i++) {
-    const eighths = Math.max(0, Math.min(8, totalEighths - i * 8));
-    bar += BAR_CHARS[8 - eighths];
-  }
-  return bar;
+  // `filled` derives from a utilization figure in the usage API's JSON, so a
+  // non-numeric value is reachable. Treat it as empty: the old eighth-block
+  // version indexed past the end of its lookup string and concatenated the
+  // literal "undefined" into the status line once per cell.
+  const clamped = Number.isFinite(filled) ? Math.max(0, Math.min(1, filled)) : 0;
+  const full = Math.round(clamped * cells);
+  return BAR_FULL.repeat(full) + BAR_EMPTY.repeat(cells - full);
 }
 
 function formatUsageStatus(data: UsageData, maxWidth: number, theme: any): string {
