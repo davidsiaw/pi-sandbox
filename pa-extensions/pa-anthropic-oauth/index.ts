@@ -125,21 +125,9 @@ async function exchangeCode(
   return resp.json() as Promise<RawTokenData>;
 }
 
-async function refreshTokens(refreshToken: string): Promise<RawTokenData> {
-  const resp = await fetchWithTimeout(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      client_id: CLIENT_ID,
-      refresh_token: refreshToken,
-    }),
-  });
-  if (!resp.ok) {
-    throw new Error(`Token refresh failed (${resp.status}): ${await resp.text()}`);
-  }
-  return resp.json() as Promise<RawTokenData>;
-}
+// NOTE: there is deliberately no refreshTokens() here any more. Refreshing
+// against Anthropic from this extension raced auth2api and produced
+// `invalid_grant` -- see refreshAnthropicToken below. auth2api owns refresh.
 
 function saveTokenFile(data: RawTokenData): void {
   fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
@@ -238,15 +226,47 @@ async function loginAnthropic(
   };
 }
 
+/**
+ * How long to push pi's expiry out each time it asks. pi then "refreshes"
+ * twice a day, which costs one local file read and keeps auth.json roughly in
+ * step with the token file without ever touching the network.
+ */
+const REFRESH_STUB_TTL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Deliberately does NOT refresh against Anthropic.
+ *
+ * WHY: auth2api holds the same credential and refreshes it on its own schedule.
+ * Anthropic ROTATES the refresh token on every use and invalidates the previous
+ * one (auth2api's own refresh-errors.js handles `refresh_token_reused` and
+ * `refresh_token_invalidated`), so two independent refreshers cannot coexist --
+ * whichever goes second presents a dead token. Observed exactly that:
+ *
+ *   04:25, 04:47, 08:25  auth2api refreshed (3 rotations)
+ *   ~08:3x               pi refreshed from its 00:47 copy
+ *                        -> 400 invalid_grant, "Refresh token not found or invalid"
+ *
+ * pi has no reason to refresh anyway: it authenticates to the LOCAL proxy with
+ * a static key (`getApiKey: () => AUTH2API_KEY`), so the access token stored
+ * here is never sent to Anthropic. Refreshing it was pure downside -- work that
+ * could only ever fail, and taking the session with it when it did.
+ *
+ * Instead: re-read whatever is on disk (a login writes it) and push the expiry
+ * out so pi stops asking. auth2api owns the real refresh.
+ *
+ * TRADEOFF, accepted deliberately: pi can no longer detect a genuinely dead
+ * credential. If auth2api's own refresh chain breaks, requests fail with 401
+ * from the proxy rather than a clean "please log in" -- at which point, log in
+ * again.
+ */
 async function refreshAnthropicToken(
   credentials: OAuthCredentials,
 ): Promise<OAuthCredentials> {
-  const data = await refreshTokens(credentials.refresh);
-  saveTokenFile(data);
+  const latest = readLatestTokenFile();
   return {
-    refresh: data.refresh_token,
-    access: data.access_token,
-    expires: Date.now() + data.expires_in * 1000,
+    refresh: latest?.refresh_token ?? credentials.refresh,
+    access: latest?.access_token ?? credentials.access,
+    expires: Date.now() + REFRESH_STUB_TTL_MS,
   };
 }
 
@@ -321,7 +341,13 @@ function writeCachedUsage(data: UsageData): void {
   } catch {}
 }
 
-function getLatestAccessToken(): string | null {
+interface StoredToken {
+  access_token?: string;
+  refresh_token?: string;
+}
+
+/** Most recently written claude-*.json, or null if none is readable. */
+function readLatestTokenFile(): StoredToken | null {
   try {
     const files = fs
       .readdirSync(AUTH_DIR)
@@ -330,10 +356,14 @@ function getLatestAccessToken(): string | null {
       .sort((a, b) => b.mtime - a.mtime);
     if (files.length === 0) return null;
     const raw = fs.readFileSync(path.join(AUTH_DIR, files[0]!.name), "utf8");
-    return (JSON.parse(raw) as { access_token: string }).access_token;
+    return JSON.parse(raw) as StoredToken;
   } catch {
     return null;
   }
+}
+
+function getLatestAccessToken(): string | null {
+  return readLatestTokenFile()?.access_token ?? null;
 }
 
 async function fetchUsage(token: string): Promise<UsageData | null> {
