@@ -227,6 +227,28 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-token-usage guard: CSV row/header agreement, cost-0 handling (local models
+# and subscription billing report 0, which must not become Infinity), and the
+# multi-writer append race. That race is real, not hypothetical: every container
+# bind-mounts the SAME host ~/.pi/agent/extensions, so N agents append to one
+# file concurrently. The selftest spawns 8 writers x 40 rows and asserts nothing
+# is lost, torn, or double-headered.
+out="$(run 'cd /opt/pa/extensions/pa-token-usage && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-token-usage selftest (csv schema + concurrent append)"
+else
+  fail "pa-token-usage selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
+# The data dir must NOT be baked next to the code. /opt/pa is read-only and
+# ephemeral; the CSVs have to land in the host-mounted ~/.pi/agent/extensions.
+# A token-usage/ dir baked here would mean the extension silently writes into
+# the container and every row is lost on exit.
+run 'test -e /opt/pa/extensions/pa-token-usage/token-usage && echo HAS_DATA || echo NO_DATA' | grep -q NO_DATA \
+  && pass "pa-token-usage ships no baked data dir (CSVs go to the host mount)" \
+  || fail "pa-token-usage/token-usage is baked into the image; rows would be lost on exit"
+
 # The uitag model must be baked, exactly like the pa-rag one. This is the check
 # that was missing when detect_ui_elements shipped registered-but-modelless: the
 # selftest below SKIPs without a model, so on its own it stays green while the

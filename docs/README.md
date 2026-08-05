@@ -15,6 +15,7 @@ the host.
 - [yousoro-browsing.md](yousoro-browsing.md) — the `pa-yousoro-browse` tool: fingerprint masking, Cloudflare handling, headed/Xvfb, what it does/doesn't fix
 - [screenshot.md](screenshot.md) — the `screenshot_url` tool: renders a URL with JS and writes a PNG **to a file**, where that file goes, and why it refuses to overwrite or to capture a bot-block page
 - [uitag.md](uitag.md) — the `detect_ui_elements` tool: pixel bounding boxes for UI elements so an agent can crop and inspect regions; why it is ONNX-in-Node rather than the 3 GB Python package, and the measured fidelity gap
+- [token-usage.md](token-usage.md) — the `pa-token-usage` extension: a daily CSV of tokens/cost per response, why the data lives in the host-mounted extensions dir rather than beside the code, the append-atomicity rule that lets several containers share one file, and the host-side `summarize-token-usage.rb` report
 - [rag.md](rag.md) — the `pa-rag` extension: automatic local hybrid index in `.pirag/`, what gets indexed (dotfiles, past sessions), the size gate, and how it reuses `pi-local-rag` without forking
 - [building.md](building.md) — `build.sh`, dual-arch builds, and the GitHub workflow
 - [testing.md](testing.md) — `smoketest.sh` and what it verifies
@@ -44,6 +45,8 @@ picon/
 ├── Dockerfile                 # the sandbox image definition
 ├── build.sh                   # dual-arch (amd64+arm64) build & push
 ├── smoketest.sh               # end-to-end test of an existing image
+├── summarize-token-usage.rb   # host tool: daily report over the pa-token-usage
+│                              # CSVs; NOT baked into the image
 ├── .github/workflows/build.yml# CI: build & push on push/tag/dispatch
 ├── docs/                      # this documentation
 ├── pa-context/                # baked always-in-context guidance
