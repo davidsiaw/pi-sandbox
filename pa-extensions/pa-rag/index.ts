@@ -822,6 +822,7 @@ export default function paRagExtension(pi: ExtensionAPI) {
 		promptSnippet:
 			"Semantic + keyword search over the indexed project, including past pi sessions",
 		promptGuidelines: [
+			"Use rag_search FIRST when orienting in an unfamiliar or large repo — to answer what the project is, how it is built, or how a subsystem works — before falling back to ls/grep. It surfaces the relevant docs and code in one call.",
 			"Use rag_search when you need to find code or notes by meaning and do not know the exact identifier — it finds 'retry/backoff handling' even when those words do not appear literally.",
 			"Use rag_search to recall what a previous session concluded; it indexes past pi session transcripts.",
 			"Prefer grep/rg over rag_search for exact identifiers, and read for whole files; rag_search returns excerpts, not authoritative full content.",

@@ -36,8 +36,14 @@ Measured example — cosine similarity between
 
 is **0.68**, with zero shared keywords. Grep scores that 0.
 
-Guidance baked into the tool's `promptGuidelines` tells the model to prefer
-`grep`/`rg` for exact identifiers and `read` for whole files.
+Guidance baked into the tool's `promptGuidelines` tells the model to reach for
+`rag_search` first when orienting in an unfamiliar repo, and to prefer `grep`/`rg`
+for exact identifiers and `read` for whole files.
+
+The orientation guideline exists because the needle-hunting framing alone was not
+enough: asked an open question like *"what is in this repo"*, models defaulted to
+`ls` and `grep` and never queried the index, even though a single semantic query
+returns the README, the architecture docs and the directory map together.
 
 ## What gets indexed
 
