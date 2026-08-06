@@ -109,6 +109,13 @@ RUN bash /tmp/install-extension-deps.sh && rm /tmp/install-extension-deps.sh
 COPY scripts/install-rag-model.sh /tmp/install-rag-model.sh
 RUN bash /tmp/install-rag-model.sh && rm /tmp/install-rag-model.sh
 
+# Cap pi-local-rag's embedding batch size. Upstream's hardcoded BATCH_SIZE=64
+# peaks at ~2.2GB RSS for one batch of real source chunks, which OOM-kills the
+# container (exit 137) inside Docker Desktop's ~3.8GB VM. See the script header
+# for the measured numbers. PA_RAG_BATCH_SIZE overrides the default at runtime.
+COPY scripts/patch-rag-batch.sh /tmp/patch-rag-batch.sh
+RUN bash /tmp/patch-rag-batch.sh && rm /tmp/patch-rag-batch.sh
+
 # Bake the pa-uitag UI-element detection model (ONNX). Runs after pa-rag because
 # it reuses that extension's onnxruntime-node to verify the model loads. Takes
 # the artifact from the uitag-export stage by default; PA_UITAG_MODEL_URL

@@ -315,16 +315,129 @@ fi
 # the structural checks are what actually regress.
 out="$(run 'cd /opt/pa/extensions/pa-rag && PA_RAG_SKIP_EMBED=1 node selftest.mjs 2>&1')"
 if echo "$out" | grep -q 'selftest: all checks passed'; then
-  pass "pa-rag selftest (walker + upstream loader)"
+  pass "pa-rag selftest (walker + upstream loader + slicer)"
 else
   fail "pa-rag selftest failed"
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-rag must never hand upstream the whole file list. indexFiles() holds every
+# chunk and vector in memory until one commit at the end, so peak memory is
+# O(repo): a big repo OOM-kills the container regardless of batch size. The
+# extension slices into SLICE_BYTES groups, which also makes each slice a commit
+# checkpoint that an interrupted pass resumes from by hash.
+run 'grep -q "indexSliced" /opt/pa/extensions/pa-rag/index.ts && echo SLICED' | grep -q SLICED \
+  && pass "pa-rag indexes in slices (memory is O(slice), not O(repo))" \
+  || fail "pa-rag lost its sliced indexing; large repos will OOM"
+run 'grep -qE "await upstream\.indexFiles\(files" /opt/pa/extensions/pa-rag/index.ts && echo UNSLICED || echo OK_NO_WHOLE_LIST' \
+  | grep -q OK_NO_WHOLE_LIST \
+  && pass "pa-rag never passes the whole file list to upstream" \
+  || fail "pa-rag calls indexFiles() with the entire walk result"
+
 # The 23MB embedding model must be baked, not downloaded at runtime: a cold
 # container has no reason to hit the network, and QEMU builds must not stall.
 run 'test -d /opt/pa/models/Xenova/all-MiniLM-L6-v2 && echo MODEL_BAKED' | grep -q MODEL_BAKED \
   && pass "pa-rag embedding model baked into image" || fail "pa-rag model missing from /opt/pa/models"
+
+# The batch-size patch must be applied. Upstream's hardcoded BATCH_SIZE=64 peaks
+# at ~2.2GB RSS for one batch of real (~3300-char) source chunks, which OOM-kills
+# the container inside Docker Desktop's ~3.8GB VM -- exit 137, schema-only index
+# DB, and a TUI killed mid-render leaving the terminal in raw mode.
+run 'grep -q "PA_RAG_BATCH_SIZE" /opt/pa/extensions/pa-rag/node_modules/pi-local-rag/embed.ts && echo BATCH_PATCHED' \
+  | grep -q BATCH_PATCHED \
+  && pass "pa-rag embed batch-size patch applied" || fail "pa-rag embed.ts not patched (indexing will OOM)"
+run 'grep -q "max_length: 512" /opt/pa/extensions/pa-rag/node_modules/pi-local-rag/embed.ts && echo TRUNC_PATCHED' \
+  | grep -q TRUNC_PATCHED \
+  && pass "pa-rag embed truncates at the model's 512-token limit" || fail "pa-rag embed.ts missing truncation"
+
+# Assert the patch RESOLVES to a safe default, not merely that the text is there.
+out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs").then(async(j)=>{const P="/opt/pa/extensions/pa-rag/node_modules/pi-local-rag";const jiti=j.createJiti("file://"+P+"/",{interopDefault:true});const m=await jiti.import(P+"/embed.ts");process.stdout.write(m.BATCH_SIZE===8?"BATCH_8":"BAD "+m.BATCH_SIZE)})'\'' ')"
+echo "$out" | grep -q BATCH_8 \
+  && pass "pa-rag BATCH_SIZE resolves to 8" || fail "pa-rag BATCH_SIZE wrong: $out"
+
+# The batch size must be resolved PER CALL, not frozen at module load. pa-rag
+# lowers it to 2 for unattended background passes (~314MB peak vs ~800MB at 8)
+# and restores 8 for an explicit /rag-index. If resolveBatchSize() ever goes back
+# to being read once at import time, the low-memory background mode silently
+# stops working and big repos get memory-hungry again.
+out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs").then(async(j)=>{const P="/opt/pa/extensions/pa-rag/node_modules/pi-local-rag";const jiti=j.createJiti("file://"+P+"/",{interopDefault:true});const m=await jiti.import(P+"/embed.ts");if(typeof m.resolveBatchSize!=="function"){process.stdout.write("NO_RESOLVER");return;}process.env.PA_RAG_BATCH_SIZE="2";const lo=m.resolveBatchSize();process.env.PA_RAG_BATCH_SIZE="8";const hi=m.resolveBatchSize();delete process.env.PA_RAG_BATCH_SIZE;const def=m.resolveBatchSize();process.stdout.write(lo===2&&hi===8&&def===8?"PERCALL_OK":"BAD lo="+lo+" hi="+hi+" def="+def)})'\'' ')"
+echo "$out" | grep -q PERCALL_OK \
+  && pass "pa-rag batch size is resolved per call (background can go low-memory)" \
+  || fail "pa-rag batch size not per-call: $out"
+
+# The extension must actually USE the two modes, and must not record throughput
+# from a throttled background pass (its elapsed time is mostly deliberate sleep,
+# so measuring it would poison every future ETA).
+run 'grep -q "BACKGROUND_BATCH_SIZE" /opt/pa/extensions/pa-rag/index.ts && grep -q "BACKGROUND_DUTY_CYCLE" /opt/pa/extensions/pa-rag/index.ts && echo MODES' \
+  | grep -q MODES \
+  && pass "pa-rag has low-memory + duty-cycled background mode" \
+  || fail "pa-rag lost its background resource limits"
+run 'grep -q "!opts.background && result.chunks > 200" /opt/pa/extensions/pa-rag/index.ts && echo GUARDED' \
+  | grep -q GUARDED \
+  && pass "pa-rag does not calibrate throughput from throttled passes" \
+  || fail "pa-rag would record throttled background time as throughput"
+
+# A pass that can run for hours needs live progress, and it must be a footer
+# status (one mutable line) rather than notifications (permanent transcript
+# spam). Guarded by ctx.hasUI so print/JSON runs stay clean, and cleared on
+# shutdown so a resumed session does not inherit a frozen bar.
+run 'grep -q "setStatus" /opt/pa/extensions/pa-rag/index.ts && echo STATUS' | grep -q STATUS \
+  && pass "pa-rag reports progress via footer status" \
+  || fail "pa-rag has no live progress reporting"
+run 'grep -q "ctx.hasUI ? makeStatus(ctx) : undefined" /opt/pa/extensions/pa-rag/index.ts && echo GUARD' | grep -q GUARD \
+  && pass "pa-rag progress is guarded by ctx.hasUI (no print-mode noise)" \
+  || fail "pa-rag progress not guarded for non-UI modes"
+run 'grep -q "onChunkProgress" /opt/pa/extensions/pa-rag/index.ts && echo FINE' | grep -q FINE \
+  && pass "pa-rag progress updates within a slice, not just at boundaries" \
+  || fail "pa-rag progress only updates per slice (coarse on big repos)"
+# The denominator must self-correct: BYTES_PER_CHUNK is a guess that measured
+# 1854 vs 3324 on two real trees, so a fixed denominator renders >100%.
+run 'grep -q "Math.max(estTotalChunks, doneChunks)" /opt/pa/extensions/pa-rag/index.ts && echo CLAMPED' \
+  | grep -q CLAMPED \
+  && pass "pa-rag progress denominator self-corrects (never exceeds 100%)" \
+  || fail "pa-rag progress can render over 100%"
+
+# The probe cap must not sit below the auto-index budget, or every project
+# between the two limits wrongly falls into the "ask first" path.
+#
+# Evaluated as arithmetic rather than parsed as a number: the two constants are
+# written with different unit chains (`1024 * 1024 * 1024` vs `2 * 1024 * ...`),
+# so comparing leading integers compares GB against MB. This check's first
+# version did exactly that and reported a false failure.
+out="$(run 'node -e '\''const fs=require("fs");const s=fs.readFileSync("/opt/pa/extensions/pa-rag/index.ts","utf8");const g=(n)=>{const m=s.match(new RegExp("const "+n+" = ([0-9*ate ]+);"));return m?Function("return ("+m[1]+")")():NaN;};const a=g("AUTO_INDEX_MAX_BYTES"),p=g("PROBE_CAP_BYTES");process.stdout.write(Number.isFinite(a)&&Number.isFinite(p)&&p>=a?("CAPS_OK auto="+(a/1048576)+"MB probe="+(p/1048576)+"MB"):("BAD auto="+a+" probe="+p))'\'' ')"
+if echo "$out" | grep -q CAPS_OK; then
+  pass "pa-rag probe cap >= auto-index budget ($(echo "$out" | grep -oE 'auto=[0-9]+MB probe=[0-9]+MB'))"
+else
+  fail "pa-rag probe cap below auto-index budget: $out"
+fi
+
+# END-TO-END MEMORY GUARD. This is the check whose absence let the OOM ship: the
+# pa-rag selftest runs with PA_RAG_SKIP_EMBED=1 in CI and its fixture chunks are
+# tiny, so neither exercised a realistic batch. Embed 64 chunks at ~3300 chars
+# (the real p100 chunk size measured on this repo) and assert the process
+# SURVIVES -- an OOM kill here shows up as exit 137 rather than a failed check.
+out="$(run 'cd /opt/pa/extensions/pa-rag && cat > /tmp/memguard.mjs <<"MEOF"
+process.env.TRANSFORMERS_CACHE = "/opt/pa/models";
+process.env.HF_HOME = "/opt/pa/models";
+const P = "/opt/pa/extensions/pa-rag/node_modules";
+const { env, pipeline } = await import(P + "/@xenova/transformers/src/transformers.js");
+env.cacheDir = "/opt/pa/models";
+env.allowRemoteModels = false;
+const { createJiti } = await import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs");
+const jiti = createJiti("file://" + P + "/pi-local-rag/", { interopDefault: true });
+const embed = await jiti.import(P + "/pi-local-rag/embed.ts");
+const texts = Array.from({ length: 64 }, () => "word ".repeat(660));
+const vectors = await embed.embedBatch(texts);
+const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
+const ok = vectors.length === 64 && vectors[0].length === 384 && rss < 1500;
+process.stdout.write(ok ? "MEMGUARD_OK rss=" + rss : "BAD n=" + vectors.length + " dim=" + (vectors[0]||[]).length + " rss=" + rss);
+MEOF
+node /tmp/memguard.mjs 2>&1')"
+if echo "$out" | grep -q MEMGUARD_OK; then
+  pass "pa-rag embeds 64 real-sized chunks without OOM ($(echo "$out" | grep -oE 'rss=[0-9]+'))"
+else
+  fail "pa-rag embedding OOMs or misbehaves at realistic chunk size: $out"
+fi
 
 out="$(run 'diff -q /opt/pa/APPEND_SYSTEM.base.md "$HOME/.pi/agent/APPEND_SYSTEM.md" >/dev/null 2>&1 && echo SAME')"
 echo "$out" | grep -q SAME \

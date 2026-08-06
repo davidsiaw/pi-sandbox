@@ -141,6 +141,29 @@ truth. Example consumer: `pa-inspect-image` depends on
 `@silvia-odwyer/photon-node` (pure WASM, same lib pi uses) to convert images to
 PNG before sending them to the vision model.
 
+## scripts/patch-rag-batch.sh (root)
+
+Runs after `install-rag-model.sh`, once `pa-rag`'s `node_modules` exist. Patches
+`pi-local-rag`'s `embed.ts` to cap the embedding batch size and truncate at the
+embedding model's real token limit.
+
+Upstream hardcodes `BATCH_SIZE = 64` and passes no `truncation`.
+`all-MiniLM-L6-v2` is a 512-token model, real source chunks reach ~830 tokens,
+and attention is O(n²) in sequence length — so one batch peaks at **~2.2 GB
+RSS**, which the kernel OOM-kills (exit 137) inside Docker Desktop's ~3.8 GB VM.
+The patch defaults the batch to **8** (~451 MB peak) and adds
+`truncation: true, max_length: 512`. `PA_RAG_BATCH_SIZE` overrides the default at
+runtime.
+
+A build-time patch rather than a fork, for the same reason as `upstream.ts`:
+pa-rag runs pi-local-rag's real code. Uses the same `node - "$FILE" <<'PATCH'`
+idiom as `install-pi.sh` and `patch-auth2api.sh`, and **fails the build loudly**
+if upstream's `BATCH_SIZE` declaration or batched embedder call is not found
+rather than silently leaving the OOM in place. Idempotent: re-running on an
+already-patched file is a no-op.
+
+See [rag.md](rag.md) for the measured batch/RSS table and the failure symptom.
+
 ## scripts/install-mise.sh (root)
 
 Installs the mise binary to `/usr/local/bin/mise` (root-owned, read-only). No
