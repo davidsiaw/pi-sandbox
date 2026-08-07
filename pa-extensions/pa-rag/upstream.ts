@@ -163,6 +163,18 @@ async function configureModelCache(): Promise<void> {
 export async function load(extensionDir: string): Promise<Upstream> {
 	if (cached) return cached;
 
+	// Install the .jsonl text extractor that our build-time patch to upstream's
+	// chunking.ts delegates to (see scripts/patch-rag-jsonl.sh). Done here because
+	// this runs before any indexing call, and a global is the only channel through
+	// which a jiti-loaded dependency can reach back into our module.
+	//
+	// Without this, an opted-in session transcript is embedded as raw JSON and
+	// produces the meaningless vectors that made sessions worth excluding at all.
+	if (!(globalThis as Record<string, unknown>).__paRagExtractJsonl) {
+		const { extractSessionText } = await import("./walk.ts");
+		(globalThis as Record<string, unknown>).__paRagExtractJsonl = extractSessionText;
+	}
+
 	// Try the extension's own node_modules first (that is where the baked
 	// `npm install` puts it), then fall back to this file's location.
 	const here = dirname(new URL(import.meta.url).pathname);

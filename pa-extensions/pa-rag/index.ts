@@ -2,11 +2,19 @@
  * pa-rag — automatic local RAG index for the project, baked into the pa image.
  *
  * WHAT IT DOES
- *   On session start, probes the project for indexable content. If it is small
- *   enough to index quickly, it indexes it in the background; otherwise it
- *   tells the user the estimate and waits for an explicit `/rag-index`. The
- *   index persists in `.pirag/`, so a *fresh* agent with no context can still
- *   search everything the previous one saw — including past pi sessions.
+ *   On session start, probes the project for indexable content and indexes it in
+ *   the background (see the budget note below). The index persists in `.pirag/`,
+ *   so a *fresh* agent with no context can still search everything the previous
+ *   one saw.
+ *
+ *   Past pi transcripts (`.pi-sessions/`) are NOT indexed by default. They were,
+ *   and it measurably poisoned retrieval on a large codebase: a transcript scored
+ *   1.000 on the exact identifier `partial_capture_amount_cents` and outranked
+ *   every real hit, with content that was an unrelated regex dump. One JSONL line
+ *   can hold an entire assistant turn, so the line-based chunker turned it into a
+ *   wall of JSON whose embedding meant nothing in particular. Opt back in with
+ *   PA_RAG_INDEX_SESSIONS=1, which also switches to parsing message text out of
+ *   each record instead of embedding raw JSON (see walk.ts extractSessionText).
  *
  * WHAT IT REUSES
  *   Chunking, ONNX embeddings (Xenova/all-MiniLM-L6-v2, 384-dim), SQLite FTS5
@@ -60,7 +68,8 @@
  *   as it crosses the cap.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -72,6 +81,21 @@ const EXTENSION_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 /** Store directory name, relative to the project root. */
 const STORE_DIR = ".pirag";
+
+/**
+ * Bumped whenever a change alters WHAT gets indexed rather than how it is
+ * stored. Upstream's incremental refresh keys on per-file content hashes, so it
+ * cannot notice that the file SET changed: excluding `.pi-sessions/` leaves every
+ * previously-embedded session chunk sitting in the index forever, still winning
+ * searches. On a version mismatch we clear once and re-index.
+ *
+ *   1 — initial
+ *   2 — sessions excluded by default; .jsonl indexed as parsed prose
+ */
+const INDEX_VERSION = 2;
+
+/** Marker file recording INDEX_VERSION for a store. */
+const VERSION_FILE = "index-version.json";
 
 /**
  * Auto-index budget. Below this we index in the background without asking.
@@ -123,6 +147,35 @@ const FOREGROUND_PAUSE_MS = 50;
 const STATUS_KEY = "pa-rag";
 
 /**
+ * How many raw hits to pull before filtering/collapsing, as a multiple of the
+ * caller's limit. hybridSearch truncates internally, so path filters applied to
+ * a `limit`-sized list would routinely return 1-2 results.
+ */
+const CANDIDATE_MULTIPLIER = 8;
+
+/** Absolute ceiling on the candidate set, so a big limit cannot blow up cost. */
+const MAX_CANDIDATES = 200;
+
+/** Characters of chunk body shown per result. */
+const EXCERPT_CHARS = 1200;
+
+/** Path segments that mark a file as tests, for the `prefer` ranking bias. */
+const TEST_PATH_RE = /(^|\/)(spec|specs|test|tests|__tests__|features)(\/|$)|_(spec|test)\.[a-z]+$|\.(spec|test)\.[a-z]+$/i;
+
+/**
+ * Multipliers for the `prefer` knob.
+ *
+ * 0.70 is derived, not guessed. The reported failure was a spec at 0.600
+ * outranking the correct controller at 0.463, so anything above 0.772 leaves the
+ * bug in place — an earlier 0.8 gave 0.480 and still lost, i.e. the knob would
+ * have existed without working. 0.70 flips it with margin while staying a nudge:
+ * a spec must score 1.43x the implementation to still win, which is the case
+ * where the spec really is the better answer.
+ */
+const TEST_DOWNWEIGHT = 0.7;
+const TEST_UPWEIGHT = 1.2;
+
+/**
  * Minimum gap between footer status writes. upstream's onEmbed fires per
  * micro-batch (every 2 chunks in background mode), which is far more often than
  * a human can read or a terminal should repaint.
@@ -165,6 +218,88 @@ interface StatusUi {
 	setStatus?: (key: string, value: string | undefined) => void;
 }
 
+/**
+ * Truncate to a character budget WITHOUT cutting mid-token.
+ *
+ * The previous `content.slice(0, 1200)` produced excerpts ending in `params =
+ * par` and `class_`, which reads as corruption and costs the agent a follow-up
+ * read -- defeating the point of an excerpt. Upstream's chunker is line-based,
+ * so a chunk always has clean line boundaries to cut on; we just have to use
+ * them. Falls back to a word boundary for a single very long line.
+ */
+const truncateAtLine = (content: string, maxChars: number): string => {
+	if (content.length <= maxChars) return content;
+
+	const window = content.slice(0, maxChars);
+	const lastNewline = window.lastIndexOf("\n");
+	// Only trust the newline if it leaves a useful excerpt; otherwise the chunk is
+	// one enormous line and we fall back to the last space.
+	let cut = lastNewline > maxChars * 0.4 ? lastNewline : window.lastIndexOf(" ");
+	if (cut < maxChars * 0.4) cut = maxChars;
+
+	const kept = content.slice(0, cut).replace(/\s+$/, "");
+	const omittedLines = content.slice(cut).split("\n").length;
+	return `${kept}\n… (+${omittedLines} more line(s) — read the file for full context)`;
+};
+
+/**
+ * Build a path predicate from gitignore-style globs.
+ *
+ * `ignore` is already a transitive dependency (upstream uses it for its own
+ * exclude patterns) and implements exactly gitignore semantics, so this needs no
+ * new dependency and behaves the way anyone who has written a .gitignore
+ * expects. Patterns are matched against the path RELATIVE to cwd, because that
+ * is how a caller thinks about "app/**".
+ */
+const buildPathMatcher = (
+	cwd: string,
+	include: string[] | undefined,
+	exclude: string[] | undefined,
+): ((absolutePath: string) => boolean) => {
+	if ((!include || include.length === 0) && (!exclude || exclude.length === 0)) return () => true;
+
+	// Lazily required: keeps the module import-clean for callers that never search.
+	let ignoreFactory: ((patterns: string[]) => { ignores: (p: string) => boolean }) | null = null;
+	try {
+		const require = createRequire(import.meta.url);
+		const mod = require("ignore");
+		const factory = (mod.default ?? mod) as () => {
+			add: (p: string[]) => unknown;
+			ignores: (p: string) => boolean;
+		};
+		ignoreFactory = (patterns) => {
+			const inst = factory();
+			inst.add(patterns);
+			return inst;
+		};
+	} catch {
+		// `ignore` unavailable (dev checkout without deps). Filters silently become
+		// no-ops rather than failing the search: degraded, not broken.
+		return () => true;
+	}
+
+	const inc = include && include.length > 0 ? ignoreFactory(include) : null;
+	const exc = exclude && exclude.length > 0 ? ignoreFactory(exclude) : null;
+
+	return (absolutePath: string): boolean => {
+		const rel = relative(cwd, absolutePath).split("\\").join("/");
+		// Outside the project entirely (global store, another tree): only keep it if
+		// the caller did not ask to scope by path.
+		if (rel.startsWith("..")) return !inc;
+		if (inc && !inc.ignores(rel)) return false;
+		if (exc?.ignores(rel)) return false;
+		return true;
+	};
+};
+
+/** Ranking multiplier for the `prefer` knob. */
+const testWeight = (relPath: string, prefer: "impl" | "test" | "any"): number => {
+	if (prefer === "any") return 1;
+	const isTest = TEST_PATH_RE.test(relPath);
+	if (prefer === "impl") return isTest ? TEST_DOWNWEIGHT : 1;
+	return isTest ? TEST_UPWEIGHT : 1;
+};
+
 const BAR_WIDTH = 12;
 
 /** Render a compact unicode progress bar for the footer. */
@@ -193,6 +328,51 @@ export default function paRagExtension(pi: ExtensionAPI) {
 		const dir = join(cwd, STORE_DIR);
 		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 		return dir;
+	};
+
+	/**
+	 * Drop a store built by an older indexing policy.
+	 *
+	 * Returns true if anything was discarded, so the caller can say so rather than
+	 * silently appearing to re-index for no reason. Deletes the SQLite files and
+	 * lets upstream recreate the schema; keeps throughput.json, which stays valid
+	 * because it measures the machine, not the content.
+	 */
+	const reconcileVersion = (dir: string): boolean => {
+		const marker = join(dir, VERSION_FILE);
+		let found = 0;
+		try {
+			const raw = JSON.parse(readFileSync(marker, "utf8")) as { version?: unknown };
+			if (typeof raw.version === "number") found = raw.version;
+		} catch {
+			// No marker: either a brand-new store or one from before versioning. Both
+			// are treated as stale, which is right -- a pre-versioning store is exactly
+			// the one that may hold session chunks.
+		}
+
+		const stale = found !== INDEX_VERSION;
+		const hadData = existsSync(join(dir, "rag.db"));
+
+		if (stale) {
+			if (hadData) {
+				for (const f of ["rag.db", "rag.db-wal", "rag.db-shm"]) {
+					try {
+						rmSync(join(dir, f), { force: true });
+					} catch {
+						// Locked by another container sharing this project mount. Leave it:
+						// a stale index is worse than ideal but not worth failing startup.
+					}
+				}
+			}
+			try {
+				writeFileSync(marker, `${JSON.stringify({ version: INDEX_VERSION }, null, 2)}\n`);
+			} catch {
+				// Read-only store dir; the rebuild still happened, we just cannot record
+				// it, so it will rebuild again next run.
+			}
+		}
+
+		return stale && hadData;
 	};
 
 	/**
@@ -289,6 +469,33 @@ export default function paRagExtension(pi: ExtensionAPI) {
 		return write;
 	};
 
+	/**
+	 * One-line trust statement for the top of a result set.
+	 *
+	 * The motivating complaint: "no idea if the index reflects the working tree, so
+	 * for any file I'm about to edit I grep anyway." An agent cannot calibrate how
+	 * much to trust an excerpt without knowing the index's age and whether the tree
+	 * moved under it, so say both up front.
+	 *
+	 * Counts files whose mtime is newer than the last build. That is a real stat
+	 * sweep, but it reuses the same walk the indexer uses and only runs per search,
+	 * so it is bounded by the same cost as a probe.
+	 */
+	const describeFreshness = (lastBuild: string | undefined): string => {
+		if (!lastBuild) return "index: freshly created (no completed build yet)";
+
+		const builtMs = Date.parse(lastBuild);
+		if (Number.isNaN(builtMs)) return "index: build time unknown";
+
+		const age = humanDuration((Date.now() - builtMs) / 1000);
+		const parts = [`built ${age} ago`];
+
+		if (indexing) parts.push("index pass RUNNING now (results incomplete)");
+		if (dirtyFiles.size > 0) parts.push(`${dirtyFiles.size} edited file(s) awaiting refresh`);
+
+		return `index: ${parts.join(" · ")}`;
+	};
+
 	const humanBytes = (n: number): string =>
 		n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
 
@@ -300,6 +507,12 @@ export default function paRagExtension(pi: ExtensionAPI) {
 
 	const estimateSeconds = (bytes: number, chunksPerSec: number): number =>
 		bytes / BYTES_PER_CHUNK / chunksPerSec;
+
+	/**
+	 * Whether to index past pi transcripts. Off by default — see the file header for
+	 * the retrieval-quality measurement behind that.
+	 */
+	const includeSessions = process.env.PA_RAG_INDEX_SESSIONS === "1";
 
 	/** Paths we must never index: our own store, and the active session file. */
 	const buildSkipPaths = (cwd: string, sessionFile: string | undefined): Set<string> => {
@@ -479,7 +692,7 @@ export default function paRagExtension(pi: ExtensionAPI) {
 			}
 
 			const skipPaths = buildSkipPaths(cwd, sessionFile);
-			const { files, bytes } = walk(cwd, { skipPaths });
+			const { files, bytes } = walk(cwd, { skipPaths, includeSessions });
 			if (files.length === 0) return "pa-rag: nothing indexable found.";
 
 			const chunksPerSec = readThroughput(dir);
@@ -722,9 +935,20 @@ export default function paRagExtension(pi: ExtensionAPI) {
 		storeDir = dir;
 		bindStore(dir);
 
+		// Discard a store built under an older indexing policy before probing, so the
+		// pass below rebuilds rather than inheriting (for example) session chunks that
+		// content-hash refresh would never evict.
+		const rebuilt = reconcileVersion(dir);
+		if (rebuilt) {
+			ctx.ui.notify(
+				"pa-rag: indexing policy changed — discarded the old index and rebuilding once.",
+				"info",
+			);
+		}
+
 		const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
 		const skipPaths = buildSkipPaths(cwd, sessionFile);
-		const result = probe(cwd, PROBE_CAP_BYTES, skipPaths);
+		const result = probe(cwd, PROBE_CAP_BYTES, skipPaths, includeSessions);
 
 		if (result.files === 0) return;
 
@@ -816,27 +1040,51 @@ export default function paRagExtension(pi: ExtensionAPI) {
 		label: "RAG Search",
 		description:
 			"Search the project's local hybrid index (BM25 keyword + vector semantic) for " +
-			"relevant file chunks. Covers source, docs, dotfiles, CI config and PAST pi " +
-			"session transcripts, so it can recover decisions and findings from earlier " +
-			"sessions that are no longer in context. Returns file paths with line numbers.",
-		promptSnippet:
-			"Semantic + keyword search over the indexed project, including past pi sessions",
+			"relevant file chunks. Covers source, docs, dotfiles and CI config. Returns one " +
+			"entry per FILE (best chunk shown, sibling matches noted) with line numbers, " +
+			"plus an index-freshness header. Supports path_include / path_exclude globs to " +
+			"scope the search, and prefer=impl to down-rank tests.",
+		promptSnippet: "Semantic + keyword search over the indexed project, with path filters",
 		promptGuidelines: [
 			"Use rag_search FIRST when orienting in an unfamiliar or large repo — to answer what the project is, how it is built, or how a subsystem works — before falling back to ls/grep. It surfaces the relevant docs and code in one call.",
 			"Use rag_search when you need to find code or notes by meaning and do not know the exact identifier — it finds 'retry/backoff handling' even when those words do not appear literally.",
-			"Use rag_search to recall what a previous session concluded; it indexes past pi session transcripts.",
+			"Scope rag_search with path_include (e.g. [\"app/**\", \"packs/**\"]) and path_exclude (e.g. [\"spec/**\", \"db/migrate/**\"]) instead of triaging unwanted results by hand.",
+			"rag_search defaults to prefer=impl, which mildly down-ranks spec/test files; pass prefer=test to search tests, or prefer=any for no adjustment.",
 			"Prefer grep/rg over rag_search for exact identifiers, and read for whole files; rag_search returns excerpts, not authoritative full content.",
+			"Check the freshness line in rag_search output: if it reports changed files since the last index, results for those files may be stale — read them directly.",
 		],
 		parameters: Type.Object({
 			query: Type.String({ description: "Natural-language or keyword query" }),
 			limit: Type.Optional(
-				Type.Number({ description: "Max results to return (default 5)", default: 5 }),
+				Type.Number({
+					description: "Max FILES to return (default 5). Chunks are collapsed per file.",
+					default: 5,
+				}),
 			),
 			alpha: Type.Optional(
 				Type.Number({
 					description:
 						"Keyword/vector blend: 0 = pure semantic, 1 = pure keyword. Default 0.4.",
 					default: 0.4,
+				}),
+			),
+			path_include: Type.Optional(
+				Type.Array(Type.String(), {
+					description:
+						'Gitignore-style globs; only matching paths are returned, e.g. ["app/**", "packs/**"].',
+				}),
+			),
+			path_exclude: Type.Optional(
+				Type.Array(Type.String(), {
+					description:
+						'Gitignore-style globs to drop, e.g. ["spec/**", "db/migrate/**"]. Applied after path_include.',
+				}),
+			),
+			prefer: Type.Optional(
+				Type.Union([Type.Literal("impl"), Type.Literal("test"), Type.Literal("any")], {
+					description:
+						"Ranking bias. impl (default) down-weights spec/test paths, test up-weights them, any leaves scores alone.",
+					default: "impl",
 				}),
 			),
 		}),
@@ -861,6 +1109,7 @@ export default function paRagExtension(pi: ExtensionAPI) {
 
 			const limit = params.limit ?? 5;
 			const alpha = params.alpha ?? 0.4;
+			const prefer = params.prefer ?? "impl";
 			const db = upstream.openDb();
 			try {
 				const stats = upstream.getIndexStats(db);
@@ -874,34 +1123,84 @@ export default function paRagExtension(pi: ExtensionAPI) {
 					};
 				}
 
-				const hits = await upstream.hybridSearch(
+				// OVER-FETCH. hybridSearch truncates to its topK internally, so filtering
+				// or collapsing afterwards would starve the result set -- ask for path
+				// filters on a 5-hit list and you get 1. Pull a wide candidate set, then
+				// filter, re-rank and collapse down to `limit` FILES.
+				const wide = Math.min(MAX_CANDIDATES, Math.max(limit * CANDIDATE_MULTIPLIER, limit));
+				const raw = await upstream.hybridSearch(
 					params.query,
 					{ chunks: [], files: {} },
-					limit,
+					wide,
 					alpha,
 					db,
 				);
-				if (hits.length === 0) {
+
+				const matcher = buildPathMatcher(ctx.cwd, params.path_include, params.path_exclude);
+				const filtered = raw.filter((hit) => matcher(hit.chunk.file));
+
+				// Ranking bias, not a filter: a spec is sometimes the right answer, it
+				// just should not outrank the implementation by default. Specs embed well
+				// because they read like prose describing intent.
+				const adjusted = filtered
+					.map((hit) => ({
+						hit,
+						score: hit.hybrid * testWeight(relative(ctx.cwd, hit.chunk.file), prefer),
+					}))
+					.sort((a, b) => b.score - a.score);
+
+				if (adjusted.length === 0) {
+					const scoped =
+						params.path_include || params.path_exclude
+							? " within the requested paths"
+							: "";
 					return {
-						content: [{ type: "text", text: `No matches for "${params.query}".` }],
-						details: { results: 0, chunks: stats.totalChunks },
+						content: [
+							{
+								type: "text",
+								text:
+									`No matches for "${params.query}"${scoped}.` +
+									(raw.length > 0 ? ` (${raw.length} hits were filtered out by path.)` : ""),
+							},
+						],
+						details: { results: 0, filteredOut: raw.length, chunks: stats.totalChunks },
 					};
 				}
 
-				const rendered = hits
-					.map((hit) => {
-						const rel = relative(ctx.cwd, hit.chunk.file) || hit.chunk.file;
-						const header = `${rel}:${hit.chunk.lineStart}-${hit.chunk.lineEnd}  score=${hit.hybrid.toFixed(3)}`;
-						return `${header}\n${hit.chunk.content.slice(0, 1200)}`;
+				// COLLAPSE PER FILE. Three chunks of payment.rb used to consume three of
+				// five result slots; now one entry per file reports its siblings, so
+				// `limit` means `limit` distinct files.
+				const byFile = new Map<string, { best: (typeof adjusted)[number]; count: number }>();
+				for (const entry of adjusted) {
+					const existing = byFile.get(entry.hit.chunk.file);
+					if (existing) existing.count++;
+					else byFile.set(entry.hit.chunk.file, { best: entry, count: 1 });
+				}
+				const files = [...byFile.values()].slice(0, limit);
+
+				const rendered = files
+					.map(({ best, count }) => {
+						const { chunk } = best.hit;
+						const rel = relative(ctx.cwd, chunk.file) || chunk.file;
+						const siblings = count > 1 ? `  (+${count - 1} more chunk(s) in this file)` : "";
+						const header =
+							`${rel}:${chunk.lineStart}-${chunk.lineEnd}  score=${best.score.toFixed(3)}${siblings}`;
+						return `${header}\n${truncateAtLine(chunk.content, EXCERPT_CHARS)}`;
 					})
 					.join("\n\n---\n\n");
 
+				const freshness = describeFreshness(stats.lastBuild);
+
 				return {
-					content: [{ type: "text", text: rendered }],
+					content: [{ type: "text", text: `${freshness}\n\n${rendered}` }],
 					details: {
-						results: hits.length,
+						results: files.length,
+						candidates: raw.length,
+						pathFiltered: raw.length - filtered.length,
 						chunks: stats.totalChunks,
 						files: stats.totalFiles,
+						stale: dirtyFiles.size,
+						indexing,
 					},
 				};
 			} catch (err) {

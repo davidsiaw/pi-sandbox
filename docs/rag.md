@@ -45,17 +45,99 @@ enough: asked an open question like *"what is in this repo"*, models defaulted t
 `ls` and `grep` and never queried the index, even though a single semantic query
 returns the README, the architecture docs and the directory map together.
 
+## Retrieval quality
+
+These fixes came from an agent that tried `rag_search` on a large Rails codebase
+and went back to `rg`. Its verdict is the useful part: *"the semantic recall
+itself was genuinely good — it's buried under noise."* Everything here removes
+noise rather than adding capability.
+
+**Session transcripts are excluded by default.** They used to be indexed — it was
+a selling point — and it measurably poisoned search: a transcript scored **1.000**
+for the exact identifier `partial_capture_amount_cents`, outranking every real
+hit, while containing an unrelated credit-card regex dump. A `.jsonl` line can
+hold an entire assistant turn, so the line-based chunker embedded a wall of JSON
+syntax and tool output whose vector meant nothing in particular.
+
+Opt back in with **`PA_RAG_INDEX_SESSIONS=1`**, which is now safe because it also
+switches to indexing *parsed message prose* (`role: text`, one message per line,
+tool calls and results discarded) instead of raw JSON. Cross-session recall still
+works — verified in `selftest.mjs` by retrieving a transcript from a semantic
+query sharing no keywords with it.
+
+**Excerpts cut on line boundaries.** The renderer did `content.slice(0, 1200)`,
+producing tails like `params = par` and `belongs_to :payment_link, optional:
+true, class_`. That reads as corruption and costs a follow-up `read`, defeating
+the point of an excerpt. Note the diagnosis: upstream's chunker was never the
+problem — it is line-based and cuts at blank lines. The damage was entirely in
+our own renderer, so the fix is a line-safe truncation with a `… (+N more lines)`
+marker, not the syntax-aware chunker it appeared to need.
+
+**Path scoping**, the single most-requested control:
+
+```
+rag_search query="capture flow" path_include=["app/**", "packs/**"] \
+                                path_exclude=["spec/**", "db/migrate/**"]
+```
+
+Gitignore semantics via `ignore` (already a transitive dependency). This requires
+**over-fetching**: `hybridSearch` truncates to its `topK` internally, so filtering
+a 5-hit list would return one or two results. pa-rag pulls `limit * 8` candidates
+(capped at 200), then filters, re-ranks and collapses.
+
+**Implementation outranks tests by default.** Specs embed well because they read
+like prose describing intent, so they were beating real answers — a spec at 0.600
+above the correct controller at 0.463. `prefer` (`impl` default / `test` / `any`)
+applies a multiplier. The value is derived, not guessed: it must be **below
+0.772** to reorder that case at all, and an initial 0.8 gave 0.480 and still lost
+— the knob would have existed without working. At **0.70** the reported case
+flips, while a spec scoring 1.43× the implementation still wins, keeping it a
+nudge rather than a filter.
+
+**One entry per file.** `limit=8` used to return three chunks of `payment.rb`;
+results now collapse per file with `(+2 more chunk(s) in this file)`, so `limit`
+means `limit` distinct files.
+
+**A freshness header**, because *"no idea if the index reflects the working tree,
+so I grep anyway"* is how the tool loses:
+
+```
+index: built 4m ago · 3 edited file(s) awaiting refresh
+```
+
+### Store versioning
+
+Upstream's incremental refresh keys on **per-file content hashes**, so it cannot
+notice that the indexed file *set* changed — excluding `.pi-sessions/` would leave
+every previously-embedded session chunk in the index forever, still winning
+searches. `INDEX_VERSION` is stored in `.pirag/index-version.json`; on a mismatch
+pa-rag discards the SQLite files once and rebuilds, telling you why.
+`throughput.json` survives, since it measures the machine rather than content.
+
+### Deliberately not done yet
+
+**Symbol mode** (`symbol: "Payment#capture"` → definition + callers) was requested
+and is genuinely the biggest remaining gap for navigation. It is deferred because
+it is a *different tool wearing RAG's clothes*: definition-plus-callers is
+ctags/LSP work, not embeddings, and `rg` already does it well. The right sequence
+is to re-measure with the noise gone and only build it if it is still the gap —
+otherwise it means reimplementing ctags inside a vector-search extension.
+
 ## What gets indexed
 
 Deliberately more than upstream `pi-local-rag` does:
 
 - ordinary source and docs
 - **dotfiles** (`.hiddenrc`, `.gitignore`) and **dot-directories** (`.github/`)
-- **past pi session transcripts** (`.pi-sessions/*.jsonl`)
 - extensionless text (`Dockerfile`, `Makefile`, `LICENSE`)
 
 Excluded (see `SKIP_DIRS` / `SKIP_FILES` in `walk.ts`):
 
+- **`.pi-sessions/`** — past pi transcripts. Indexed by default until it was
+  measured on a large codebase and found to poison identifier search; see
+  [Retrieval quality](#retrieval-quality). Re-enable with
+  `PA_RAG_INDEX_SESSIONS=1`, which indexes parsed message prose rather than raw
+  JSON lines.
 - `.git/` — compressed binary; produces garbage embeddings in bulk, and is
   **not** covered by `.gitignore`
 - `node_modules/`, `dist/`, `build/`, `target/`, caches, `vendor/`

@@ -116,6 +116,12 @@ RUN bash /tmp/install-rag-model.sh && rm /tmp/install-rag-model.sh
 COPY scripts/patch-rag-batch.sh /tmp/patch-rag-batch.sh
 RUN bash /tmp/patch-rag-batch.sh && rm /tmp/patch-rag-batch.sh
 
+# Route .jsonl extraction through pa-rag, so an opted-in session transcript is
+# indexed as message prose rather than raw JSON lines. Inert unless pa-rag
+# installs the hook. See the script header for the retrieval-quality measurement.
+COPY scripts/patch-rag-jsonl.sh /tmp/patch-rag-jsonl.sh
+RUN bash /tmp/patch-rag-jsonl.sh && rm /tmp/patch-rag-jsonl.sh
+
 # Bake the pa-uitag UI-element detection model (ONNX). Runs after pa-rag because
 # it reuses that extension's onnxruntime-node to verify the model loads. Takes
 # the artifact from the uitag-export stage by default; PA_UITAG_MODEL_URL

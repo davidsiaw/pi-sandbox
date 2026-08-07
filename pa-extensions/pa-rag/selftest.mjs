@@ -78,7 +78,40 @@ const rel = files.map((f) => f.slice(root.length + 1).split("\\").join("/")).sor
 
 check("indexes a dot-directory (.github/)", rel.includes(".github/workflows/build.yml"), rel.join(","));
 check("indexes a plain dotfile (.hiddenrc)", rel.includes(".hiddenrc"), rel.join(","));
-check("indexes past pi sessions (.jsonl)", rel.includes(".pi-sessions/old-session.jsonl"), rel.join(","));
+
+// Sessions are EXCLUDED by default. They used to be indexed, and on a large real
+// codebase a transcript scored 1.000 for the exact identifier
+// `partial_capture_amount_cents` -- outranking every genuine hit, with content
+// that was an unrelated regex dump. One JSONL line can hold a whole assistant
+// turn, so the line-based chunker embedded a wall of JSON.
+check(
+	"EXCLUDES past pi sessions by default",
+	!rel.some((f) => f.startsWith(".pi-sessions/")),
+	rel.join(","),
+);
+{
+	const optedIn = walk(root, {
+		skipPaths: new Set([join(root, ".pirag")]),
+		includeSessions: true,
+	});
+	const inRel = optedIn.files.map((f) => f.slice(root.length + 1).split("\\").join("/"));
+	check(
+		"includeSessions:true re-admits them",
+		inRel.includes(".pi-sessions/old-session.jsonl"),
+		inRel.join(","),
+	);
+	// The opt-in must not also re-admit everything else in SKIP_DIRS.
+	check(
+		"includeSessions does not re-admit .git",
+		!inRel.some((f) => f.startsWith(".git/")),
+		inRel.join(","),
+	);
+	check(
+		"includeSessions does not re-admit node_modules",
+		!inRel.some((f) => f.startsWith("node_modules/")),
+		inRel.join(","),
+	);
+}
 check("indexes extensionless text (Dockerfile)", rel.includes("Dockerfile"), rel.join(","));
 check("indexes ordinary source", rel.includes("src/app.ts"), rel.join(","));
 check("excludes .git/", !rel.some((f) => f.startsWith(".git/")), rel.join(","));
@@ -132,20 +165,6 @@ if (upstream && !process.env.PA_RAG_SKIP_EMBED) {
 		const stats = upstream.getIndexStats(db);
 		check("index reports stored chunks", stats.totalChunks > 0, JSON.stringify(stats));
 
-		// Semantic recall: no shared keywords with the stored text.
-		const sigpipe = await upstream.hybridSearch(
-			"why did the smoke test terminate with a broken pipe",
-			{ chunks: [], files: {} },
-			5,
-			0.4,
-			db,
-		);
-		check(
-			"retrieves a past pi session transcript",
-			sigpipe.some((h) => h.chunk.file.endsWith("old-session.jsonl")),
-			sigpipe.map((h) => h.chunk.file).join(","),
-		);
-
 		const dotfile = await upstream.hybridSearch(
 			"alpha-quebec-marker",
 			{ chunks: [], files: {} },
@@ -164,10 +183,187 @@ if (upstream && !process.env.PA_RAG_SKIP_EMBED) {
 	} finally {
 		db.close();
 	}
+
+	// Opted-in sessions must be retrievable BY THEIR PROSE. This is the check that
+	// makes the opt-in worth having: the transcript is indexed through
+	// extractSessionText, so a semantic query with no shared keywords should find
+	// it -- whereas raw-JSONL indexing produced vectors that matched nothing in
+	// particular (and everything by accident).
+	const sessionRoot = mkdtempSync(join(tmpdir(), "pa-rag-sessions-"));
+	mkdirSync(join(sessionRoot, ".pi-sessions"), { recursive: true });
+	mkdirSync(join(sessionRoot, "store"), { recursive: true });
+	writeFileSync(
+		join(sessionRoot, ".pi-sessions", "prior.jsonl"),
+		`${[
+			JSON.stringify({
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: "exit code 141 is SIGPIPE: grep closed the pipe while the browser was still streaming output.",
+						},
+						{ type: "toolResult", output: "ZZZZ".repeat(400) },
+					],
+				},
+			}),
+		].join("\n")}\n`,
+	);
+
+	const optedIn = walk(sessionRoot, {
+		skipPaths: new Set([join(sessionRoot, "store")]),
+		includeSessions: true,
+	});
+	process.env.PI_RAG_DIR = join(sessionRoot, "store");
+	const sdb = upstream.openDb();
+	try {
+		await upstream.indexFiles(optedIn.files, { onFile: () => {} }, sdb, false);
+		const hits = await upstream.hybridSearch(
+			"why did the command terminate with a broken pipe",
+			{ chunks: [], files: {} },
+			5,
+			0.4,
+			sdb,
+		);
+		check(
+			"opted-in session is retrievable via parsed prose",
+			hits.some((h) => h.chunk.file.endsWith("prior.jsonl")),
+			hits.map((h) => h.chunk.file).join(","),
+		);
+		// The indexed text must be prose, not the raw line: tool output must be gone.
+		const hit = hits.find((h) => h.chunk.file.endsWith("prior.jsonl"));
+		if (hit) {
+			check("indexed session chunk holds prose, not raw JSON", !hit.chunk.content.includes("ZZZZ"), hit.chunk.content.slice(0, 120));
+			check("indexed session chunk has a role label", /assistant:/.test(hit.chunk.content), hit.chunk.content.slice(0, 120));
+		}
+	} catch (err) {
+		failed++;
+		console.log(`  FAIL opted-in session indexing :: ${err instanceof Error ? err.message : String(err)}`);
+	} finally {
+		sdb.close();
+	}
 } else if (!process.env.PA_RAG_SKIP_EMBED) {
 	console.log("  skip end-to-end (upstream failed to load)");
 } else {
 	console.log("  skip end-to-end (PA_RAG_SKIP_EMBED set)");
+}
+
+// ── (1b) Session transcript extraction ───────────────────────────────
+// When sessions ARE opted in, they must be indexed as message prose. Embedding
+// raw JSONL is what made them poison retrieval in the first place, so the opt-in
+// is only safe if this parser works.
+{
+	const { extractSessionText } = await import(join(here, "walk.ts"));
+
+	const transcript = [
+		JSON.stringify({ type: "session", version: 3, cwd: "/x" }),
+		JSON.stringify({
+			type: "message",
+			message: {
+				role: "user",
+				content: "why does capture fail for partial amounts",
+			},
+		}),
+		JSON.stringify({
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "checking the paysafe adapter" },
+					{ type: "text", text: "The refund path truncates the cents value." },
+					{ type: "toolCall", name: "read", input: { path: "/very/long/path.rb" } },
+					{ type: "toolResult", output: "AAAA".repeat(500) },
+				],
+			},
+		}),
+		'{"type":"message","message":{"role":"assi', // truncated final line (killed mid-write)
+	].join("\n");
+
+	const text = extractSessionText(transcript);
+	check("extracts user prose", text.includes("why does capture fail"), text);
+	check("extracts assistant text", text.includes("refund path truncates"), text);
+	check("extracts thinking", text.includes("paysafe adapter"), text);
+	check("labels each line with its role", /^user: /m.test(text) && /^assistant: /m.test(text), text);
+	// Tool plumbing is most of a transcript's bytes and almost none of its meaning;
+	// it is precisely what embedded so badly as raw JSON.
+	check("DROPS tool results", !text.includes("AAAA"), text.slice(0, 200));
+	check("drops tool calls", !text.includes("/very/long/path.rb"), text.slice(0, 200));
+	check("emits no JSON scaffolding", !text.includes('"type"') && !text.includes("{"), text.slice(0, 200));
+	check("survives a truncated final line", typeof text === "string" && text.length > 0);
+	check("skips non-message records", !text.includes("version"), text.slice(0, 200));
+	// A file with nothing usable must yield "" so the caller can skip it rather
+	// than embedding an empty chunk.
+	check("returns empty string for no usable content", extractSessionText("not json\n\n") === "");
+	check("returns empty string for empty input", extractSessionText("") === "");
+}
+
+// ── (1c) Excerpt truncation ─────────────────────────────────────────
+// Excerpts used to end mid-token (`params = par`, `class_`) because the renderer
+// did a blind content.slice(0, 1200). That reads as corruption and costs a
+// follow-up read, which defeats the purpose of an excerpt.
+{
+	const truncateAtLine = (content, maxChars) => {
+		if (content.length <= maxChars) return content;
+		const window = content.slice(0, maxChars);
+		const lastNewline = window.lastIndexOf("\n");
+		let cut = lastNewline > maxChars * 0.4 ? lastNewline : window.lastIndexOf(" ");
+		if (cut < maxChars * 0.4) cut = maxChars;
+		const kept = content.slice(0, cut).replace(/\s+$/, "");
+		const omitted = content.slice(cut).split("\n").length;
+		return `${kept}\n… (+${omitted} more line(s) — read the file for full context)`;
+	};
+
+	const short = "def capture\n  amount\nend";
+	check("short content passes through untouched", truncateAtLine(short, 1200) === short);
+
+	const code = Array.from({ length: 80 }, (_, i) => `  line_number_${i} = compute_value(${i})`).join("\n");
+	const cut = truncateAtLine(code, 400);
+	const body = cut.split("\n").filter((l) => !l.startsWith("…"));
+	check("truncation ends on a line boundary", body.every((l) => /\)$/.test(l) || l === ""), JSON.stringify(body.slice(-2)));
+	check("truncation reports omitted lines", /\u2026 \(\+\d+ more line\(s\)/.test(cut), cut.slice(-80));
+	check("truncated output respects the budget", body.join("\n").length <= 400, String(body.join("\n").length));
+
+	// One enormous single line has no newline to cut on: must fall back to a word
+	// boundary rather than splitting an identifier.
+	const oneLine = `x = ${"averylongtoken ".repeat(200)}`;
+	const cut2 = truncateAtLine(oneLine, 300);
+	const firstLine = cut2.split("\n")[0];
+	check("single long line cuts at a word boundary", !/averylongtoke$|averylongto$/.test(firstLine), firstLine.slice(-30));
+}
+
+// ── (1d) Path filters and impl/test ranking ────────────────────────────
+{
+	const TEST_PATH_RE = /(^|\/)(spec|specs|test|tests|__tests__|features)(\/|$)|_(spec|test)\.[a-z]+$|\.(spec|test)\.[a-z]+$/i;
+	// Must track TEST_DOWNWEIGHT in index.ts. 0.8 was tried first and did NOT fix
+	// the reported case (0.600 * 0.8 = 0.480, still beating 0.463); anything above
+	// 0.772 leaves the bug in place.
+	const weight = (p, prefer) => {
+		if (prefer === "any") return 1;
+		const isTest = TEST_PATH_RE.test(p);
+		if (prefer === "impl") return isTest ? 0.7 : 1;
+		return isTest ? 1.2 : 1;
+	};
+
+	check("detects spec/ dir", TEST_PATH_RE.test("spec/helpers/payment_helper_spec.rb"));
+	check("detects _spec.rb suffix", TEST_PATH_RE.test("app/models/payment_spec.rb"));
+	check("detects .test.ts suffix", TEST_PATH_RE.test("src/pay.test.ts"));
+	check("detects __tests__ dir", TEST_PATH_RE.test("src/__tests__/pay.ts"));
+	check("does NOT flag implementation", !TEST_PATH_RE.test("app/models/payment.rb"));
+	// The motivating false positive class: real code whose name merely contains
+	// "test" must not be down-ranked.
+	check("does not flag 'latest' in a path", !TEST_PATH_RE.test("app/services/latest_rates.rb"));
+	check("does not flag 'contest' in a path", !TEST_PATH_RE.test("app/models/contest.rb"));
+
+	// The reported symptom: a spec at 0.600 outranking the real answer at 0.463.
+	const specScore = 0.6 * weight("spec/helpers/payment_helper_spec.rb", "impl");
+	const implScore = 0.463 * weight("app/controllers/paysafe_controller.rb", "impl");
+	check("prefer=impl flips spec-over-impl ranking", implScore > specScore, `impl=${implScore.toFixed(3)} spec=${specScore.toFixed(3)}`);
+	check("prefer=any leaves scores untouched", weight("spec/a_spec.rb", "any") === 1);
+	check("prefer=test up-weights specs", weight("spec/a_spec.rb", "test") > 1);
+	// The bias must stay mild: a much stronger impl hit should still win under
+	// prefer=test, or the knob becomes a filter.
+	check("bias is mild, not a filter", 0.9 * weight("app/x.rb", "test") > 0.5 * weight("spec/x_spec.rb", "test"));
 }
 
 // ── (3b) Sliced indexing: memory bound, checkpointing, resume ─────────────

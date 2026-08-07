@@ -21,7 +21,19 @@
  */
 
 import { readdirSync, statSync } from "node:fs";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
+
+/**
+ * Directories holding pi session transcripts. Skipped unless the caller opts in.
+ *
+ * Kept separate from SKIP_DIRS so the opt-in can re-admit exactly these without
+ * having to reconstruct the rest of the skip set.
+ */
+export const SESSION_DIRS = [".pi-sessions", ".omp-sessions"] as const;
+
+/** True if `dir` is a session transcript directory. */
+export const isSessionDir = (dir: string): boolean =>
+	(SESSION_DIRS as readonly string[]).includes(basename(dir));
 
 /**
  * Directories never worth indexing. Mostly build output, dependency trees and
@@ -36,6 +48,13 @@ export const SKIP_DIRS = new Set([
 	"node_modules",
 	".pirag", // our own store — never index the index
 	".pi", // pi state, incl. upstream's default .pi/rag store
+	// Past pi transcripts. Indexed by default until it was measured against a
+	// large real codebase, where a session file scored 1.000 on an exact
+	// identifier query (`partial_capture_amount_cents`) and outranked every real
+	// hit -- with content that was an unrelated regex dump. Cross-session recall
+	// is genuinely useful, but not at the cost of poisoning identifier search, so
+	// it is now opt-in via SESSION_DIRS + walk({ includeSessions: true }).
+	...SESSION_DIRS,
 	"dist",
 	"build",
 	"out",
@@ -192,10 +211,11 @@ export function isIndexable(name: string): boolean {
  */
 export function walk(
 	root: string,
-	opts: { capBytes?: number; skipPaths?: Set<string> } = {},
+	opts: { capBytes?: number; skipPaths?: Set<string>; includeSessions?: boolean } = {},
 ): { files: string[]; bytes: number; overCap: boolean } {
 	const capBytes = opts.capBytes ?? Number.POSITIVE_INFINITY;
 	const skipPaths = opts.skipPaths;
+	const includeSessions = opts.includeSessions ?? false;
 	const files: string[] = [];
 	let bytes = 0;
 	let overCap = false;
@@ -213,7 +233,8 @@ export function walk(
 			const full = join(dir, entry.name);
 			if (skipPaths?.has(full)) continue;
 			if (entry.isDirectory()) {
-				if (SKIP_DIRS.has(entry.name)) continue;
+				// Session dirs live in SKIP_DIRS, so re-admit them explicitly when asked.
+				if (SKIP_DIRS.has(entry.name) && !(includeSessions && isSessionDir(full))) continue;
 				recurse(full);
 			} else if (entry.isFile()) {
 				if (!isIndexable(entry.name)) continue;
@@ -240,8 +261,81 @@ export function walk(
 }
 
 /** Measure indexable size without collecting paths. Cheap enough for startup. */
-export function probe(root: string, capBytes: number, skipPaths?: Set<string>): ProbeResult {
+export function probe(
+	root: string,
+	capBytes: number,
+	skipPaths?: Set<string>,
+	includeSessions?: boolean,
+): ProbeResult {
 	const started = Date.now();
-	const { files, bytes, overCap } = walk(root, { capBytes, skipPaths });
+	const { files, bytes, overCap } = walk(root, { capBytes, skipPaths, includeSessions });
 	return { bytes, files: files.length, overCap, ms: Date.now() - started };
+}
+
+/**
+ * Flatten a pi session transcript into readable prose.
+ *
+ * WHY THIS EXISTS:
+ * A `.jsonl` transcript is one JSON object per line, and a single line can carry
+ * an entire assistant turn -- thinking blocks, several text blocks, tool calls
+ * and their results. Upstream's chunker is line-based, so one line becomes one
+ * chunk: a wall of JSON syntax, base64, escaped newlines and tool plumbing.
+ * Embedding that produces a vector that means nothing in particular, which is
+ * exactly why a session file could score 1.000 on an unrelated identifier query.
+ *
+ * So when sessions ARE indexed, index this instead: `role: text` per message,
+ * one message per line, JSON scaffolding and non-text blocks discarded. Now the
+ * chunker sees prose and the embeddings describe what was actually discussed.
+ *
+ * Returns "" when the file yields no usable text, which the caller treats as
+ * "skip this file" rather than indexing an empty chunk.
+ */
+export function extractSessionText(raw: string): string {
+	const out: string[] = [];
+
+	for (const line of raw.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed.length === 0) continue;
+
+		let record: unknown;
+		try {
+			record = JSON.parse(trimmed);
+		} catch {
+			continue; // partial final line (session killed mid-write) or not JSONL
+		}
+		if (typeof record !== "object" || record === null) continue;
+
+		const message = (record as { message?: unknown }).message;
+		if (typeof message !== "object" || message === null) continue;
+
+		const role = (message as { role?: unknown }).role;
+		const content = (message as { content?: unknown }).content;
+		const roleLabel = typeof role === "string" ? role : "unknown";
+
+		// Content is either a bare string or an array of typed blocks.
+		if (typeof content === "string") {
+			const text = content.trim();
+			if (text.length > 0) out.push(`${roleLabel}: ${text}`);
+			continue;
+		}
+		if (!Array.isArray(content)) continue;
+
+		for (const block of content) {
+			if (typeof block !== "object" || block === null) continue;
+			const type = (block as { type?: unknown }).type;
+			// Only prose. Deliberately skipping toolCall/toolResult: they are the
+			// bulk of a transcript's bytes and almost none of its meaning, and they
+			// are what made raw JSONL lines embed so badly.
+			if (type !== "text" && type !== "thinking") continue;
+			const value =
+				type === "text"
+					? (block as { text?: unknown }).text
+					: (block as { thinking?: unknown }).thinking;
+			if (typeof value !== "string") continue;
+			const text = value.trim();
+			if (text.length > 0) out.push(`${roleLabel}: ${text}`);
+		}
+	}
+
+	return out.join("\n");
 }

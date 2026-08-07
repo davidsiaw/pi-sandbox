@@ -164,6 +164,28 @@ already-patched file is a no-op.
 
 See [rag.md](rag.md) for the measured batch/RSS table and the failure symptom.
 
+## scripts/patch-rag-jsonl.sh (root)
+
+Adds a `.jsonl` / `.ndjson` branch to `pi-local-rag`'s `extractText()` that
+delegates to a `globalThis.__paRagExtractJsonl` hook, which `pa-rag` installs in
+`upstream.ts`. The parser itself (`extractSessionText`) lives in
+`pa-extensions/pa-rag/walk.ts`.
+
+Why it exists: a pi session transcript is one JSON object per line, and a line can
+carry a whole assistant turn — thinking, several text blocks, tool calls and their
+results. Upstream's chunker is line-based, so one line became one chunk of JSON
+syntax and tool output, whose embedding matched nothing in particular and
+everything by accident. Session indexing is now opt-in
+(`PA_RAG_INDEX_SESSIONS=1`), and this patch is what makes the opt-in worth having:
+it indexes `role: text` prose instead.
+
+Delegating rather than inlining the parser keeps **one** implementation, in our own
+source, unit-tested by `selftest.mjs` — rather than burying real logic in a bash
+heredoc that patches a dependency. The patch is **inert without the hook**: it
+falls through to upstream's normal UTF-8 read, so a plain `pi-local-rag` install
+behaves exactly as before. Fails the build loudly if upstream's extraction path
+moves; idempotent.
+
 ## scripts/install-mise.sh (root)
 
 Installs the mise binary to `/usr/local/bin/mise` (root-owned, read-only). No

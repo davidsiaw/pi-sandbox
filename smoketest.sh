@@ -397,6 +397,85 @@ run 'grep -q "Math.max(estTotalChunks, doneChunks)" /opt/pa/extensions/pa-rag/in
   && pass "pa-rag progress denominator self-corrects (never exceeds 100%)" \
   || fail "pa-rag progress can render over 100%"
 
+# Retrieval-quality fixes, driven by feedback from an agent working a large
+# codebase that chose rg over rag_search. Each of these is a measured symptom, so
+# each gets a guard.
+
+# Session transcripts must be excluded by default: one scored 1.000 on the exact
+# identifier `partial_capture_amount_cents` and outranked every real hit, with
+# content that was an unrelated regex dump.
+run 'grep -q "SESSION_DIRS" /opt/pa/extensions/pa-rag/walk.ts && echo SESSIONS_GATED' \
+  | grep -q SESSIONS_GATED \
+  && pass "pa-rag gates session transcripts behind an opt-in" \
+  || fail "pa-rag still indexes .pi-sessions unconditionally"
+out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/opt/pa/extensions/pa-rag/walk.ts").then(m=>{const s=m.SKIP_DIRS;process.stdout.write(s.has(".pi-sessions")?"EXCLUDED":"INCLUDED")})'\'' ')"
+echo "$out" | grep -q EXCLUDED \
+  && pass "pa-rag excludes .pi-sessions from the default walk" \
+  || fail "pa-rag default walk still includes sessions: $out"
+
+# When sessions ARE opted in, they must be indexed as parsed prose. Embedding raw
+# JSONL (one line can be a whole assistant turn) is what made them poison search.
+run 'grep -q "__paRagExtractJsonl" /opt/pa/extensions/pa-rag/node_modules/pi-local-rag/chunking.ts && echo JSONL_PATCHED' \
+  | grep -q JSONL_PATCHED \
+  && pass "pa-rag .jsonl extraction patch applied to upstream" \
+  || fail "pa-rag jsonl patch missing (sessions would embed as raw JSON)"
+out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/opt/pa/extensions/pa-rag/walk.ts").then(m=>{const t=m.extractSessionText(JSON.stringify({type:"message",message:{role:"user",content:"hello world"}}));process.stdout.write(t==="user: hello world"?"PARSER_OK":"BAD:"+t)})'\'' ')"
+echo "$out" | grep -q PARSER_OK \
+  && pass "pa-rag session parser emits role-labelled prose" \
+  || fail "pa-rag session parser wrong: $out"
+
+# Excerpts must not end mid-token. The old renderer did content.slice(0, 1200),
+# producing tails like "params = par" and "class_" that cost a follow-up read.
+run 'grep -q "truncateAtLine" /opt/pa/extensions/pa-rag/index.ts && echo LINE_SAFE' | grep -q LINE_SAFE \
+  && pass "pa-rag truncates excerpts on line boundaries" \
+  || fail "pa-rag still truncates excerpts mid-token"
+# Strip comment lines before checking: the docstring explaining this very fix
+# quotes the old `content.slice(0, 1200)`, which made the first version of this
+# check fail on its own documentation.
+run 'grep -vE "^[[:space:]]*(//|\*|/\*)" /opt/pa/extensions/pa-rag/index.ts | grep -qE "content\.slice\(0, *1200\)" && echo RAW_SLICE || echo NO_RAW_SLICE' \
+  | grep -q NO_RAW_SLICE \
+  && pass "pa-rag has no blind character slice left (outside comments)" \
+  || fail "pa-rag still contains the mid-token slice"
+
+# Path scoping was the single most-requested control ("the #1 reason I reach for
+# rg"), and it only works if the candidate set is over-fetched first: hybridSearch
+# truncates to topK internally, so filtering a limit-sized list starves results.
+run 'grep -q "path_include" /opt/pa/extensions/pa-rag/index.ts && grep -q "path_exclude" /opt/pa/extensions/pa-rag/index.ts && echo GLOBS' \
+  | grep -q GLOBS \
+  && pass "pa-rag exposes path_include / path_exclude" \
+  || fail "pa-rag has no path filters"
+run 'grep -q "CANDIDATE_MULTIPLIER" /opt/pa/extensions/pa-rag/index.ts && echo OVERFETCH' | grep -q OVERFETCH \
+  && pass "pa-rag over-fetches before filtering (filters do not starve results)" \
+  || fail "pa-rag filters a limit-sized list; path filters would return too few hits"
+
+# Same-file chunks used to eat the result budget (limit=8 returning 3 chunks of
+# one file); collapse to one entry per file.
+run 'grep -q "more chunk(s) in this file" /opt/pa/extensions/pa-rag/index.ts && echo COLLAPSED' | grep -q COLLAPSED \
+  && pass "pa-rag collapses chunks per file (limit means distinct files)" \
+  || fail "pa-rag returns duplicate chunks from one file"
+
+# Freshness: without it an agent cannot calibrate trust and greps anyway.
+run 'grep -q "describeFreshness" /opt/pa/extensions/pa-rag/index.ts && echo FRESH' | grep -q FRESH \
+  && pass "pa-rag reports index freshness in results" \
+  || fail "pa-rag results carry no freshness signal"
+
+# The impl/test bias must be strong enough to fix the REPORTED case: a spec at
+# 0.600 outranking the right answer at 0.463. 0.8 was tried and still lost
+# (0.480 > 0.463), so anything above 0.772 means the knob exists but does nothing.
+out="$(run 'grep -E "^const TEST_DOWNWEIGHT" /opt/pa/extensions/pa-rag/index.ts')"
+weight="$(echo "$out" | grep -oE '0\.[0-9]+')"
+if [ -n "$weight" ] && awk "BEGIN{exit !($weight < 0.772)}"; then
+  pass "pa-rag test down-weight ($weight) actually reorders the reported case"
+else
+  fail "pa-rag test down-weight too mild to fix spec-over-impl: $out"
+fi
+
+# Changing WHAT is indexed cannot be detected by upstream's per-file content
+# hashes, so an existing store would keep serving session chunks forever.
+run 'grep -q "INDEX_VERSION" /opt/pa/extensions/pa-rag/index.ts && echo VERSIONED' | grep -q VERSIONED \
+  && pass "pa-rag versions the store so policy changes force a rebuild" \
+  || fail "pa-rag cannot invalidate a store built under an older policy"
+
 # The probe cap must not sit below the auto-index budget, or every project
 # between the two limits wrongly falls into the "ask first" path.
 #
