@@ -196,6 +196,54 @@ else
   pass "baked extension loads (no load error)"
 fi
 
+# pa-rag's upstream loader must survive being run THROUGH JITI, which is how pi
+# loads extensions -- not through plain node, which is how the selftests run.
+#
+# That gap shipped a fully broken pa-rag: an `await import()` added inside
+# upstream.ts's load() was hoisted by jiti's ESM->CJS transform above the `const
+# jitiImport` it depends on, so every call threw "Cannot access 'jitiImport'
+# before initialization" -- killing rag_search and all indexing. Plain-node ESM
+# handles that shape fine, so ~90 selftest checks stayed green while the extension
+# was dead in the real container.
+#
+# Scoped to pa-rag on purpose. A bare jiti import is NOT a valid check for every
+# extension: several (pa-anthropic-oauth, pa-inspect-image) import pi's own
+# packages (@earendil-works/pi-tui, pi-ai/compat), which only resolve inside pi's
+# module context -- they fail under standalone jiti while working perfectly under
+# `pi -e`, which the pa-example check above already covers. upstream.ts imports
+# only node builtins plus its own siblings, so it CAN be loaded standalone, and it
+# is where the hoisting hazard lives.
+#
+# Importing is not sufficient (the bug was inside a function), so this CALLS
+# load(). A missing-dependency error is fine; a TDZ/hoisting error is not.
+# run_clean, not run: the entrypoint's "Adding agent user..." goes to stderr and
+# 2>&1 would fold it into the result string -- which is exactly how the first
+# version of this check reported a bogus failure.
+out="$(run_clean 'cat > /tmp/jitiload.mjs <<"JEOF"
+import { join } from "node:path";
+const JITI = "/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti";
+const { createJiti } = await import(JITI + "/lib/jiti.mjs");
+const dir = "/opt/pa/extensions/pa-rag";
+const jiti = createJiti("file://" + dir + "/", { interopDefault: true });
+let verdict = "JITI_LOAD_OK";
+try {
+  const up = await jiti.import(join(dir, "upstream.ts"));
+  await up.load(dir);
+} catch (err) {
+  const msg = String(err && err.message);
+  if (/before initialization|is not defined|Cannot access/.test(msg)) {
+    verdict = "JITI_LOAD_FAIL " + msg.slice(0, 140);
+  }
+}
+process.stdout.write(verdict);
+JEOF
+node /tmp/jitiload.mjs 2>/dev/null')"
+if echo "$out" | grep -q JITI_LOAD_OK; then
+  pass "pa-rag upstream loader runs under jiti (pi's real loader)"
+else
+  fail "pa-rag broken under jiti: $(echo "$out" | sed 's/^.*JITI_LOAD_FAIL //')"
+fi
+
 # yousoro-browse behavioral guard: fingerprint init script + block/challenge
 # detection (visible-text, not raw HTML — the 403-then-redirect fix). Auth-free,
 # runs a real Chromium via the baked selftest.

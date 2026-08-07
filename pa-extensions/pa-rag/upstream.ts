@@ -36,6 +36,13 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+// STATIC, not `await import()` inside load(). pi loads extensions through jiti,
+// whose ESM->CJS transform hoists dynamic imports in a function body; adding one
+// to load() pushed `const jitiImport` below its own use and every call died with
+// "Cannot access 'jitiImport' before initialization", taking rag_search and all
+// indexing with it. Safe as a static import: walk.ts pulls in node builtins only,
+// has no cycle back to here, and no side effects at module scope.
+import { extractSessionText } from "./walk.ts";
 
 /**
  * Locate jiti. Prefer the copy inside the pi install (guaranteed present,
@@ -170,8 +177,10 @@ export async function load(extensionDir: string): Promise<Upstream> {
 	//
 	// Without this, an opted-in session transcript is embedded as raw JSON and
 	// produces the meaningless vectors that made sessions worth excluding at all.
+	//
+	// extractSessionText is imported statically at the top of this file -- see the
+	// note there for why it must not become a dynamic import again.
 	if (!(globalThis as Record<string, unknown>).__paRagExtractJsonl) {
-		const { extractSessionText } = await import("./walk.ts");
 		(globalThis as Record<string, unknown>).__paRagExtractJsonl = extractSessionText;
 	}
 
