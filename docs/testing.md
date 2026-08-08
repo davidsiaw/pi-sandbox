@@ -34,6 +34,7 @@ cache volume, exercising the real runtime path a user would hit.
 | mise present | mise binary is installed and runnable |
 | playwright present | Playwright CLI works |
 | chromium present | browser is at `/opt/ms-playwright` |
+| pdftoppm on PATH (poppler-utils) | `pdf_render` can rasterise scanned PDF pages for `inspect_image`; without it scanned PDFs are unreadable |
 | no implicit auto-install on shim call | a bare `ruby`/etc call for a missing version does NOT trigger an install |
 | uninstalled .ruby-version stayed uninstalled | `installs/ruby` is still empty afterwards (checks the directory, not `mise ls`, which also lists merely-requested versions) |
 | ruby 3.4 pinned as system default | `/etc/mise/config.toml` pins a default that survives restarts |
@@ -55,8 +56,9 @@ cache volume, exercising the real runtime path a user would hit.
 | baked skill present | a skill is baked at `/opt/pa/skills` |
 | baked extension present | an extension is baked at `/opt/pa/extensions` |
 | baked extension loads (no load error) | pi loads the baked extension without error |
-| pa-pdf selftest (offsets + windowing + search + scanned detection) | `pdf_map` reports a PDF's shape without returning its text; per-page offsets address the right page (the contract `pdf_read`/`pdf_search` will rest on); pages with no text layer are reported rather than silently empty; `pdf_read` windows are bounded, stop on a page boundary and hand back a continuation cursor that round-trips without overlap; `pdf_search` maps match offsets back to the right page, stays literal by default, and its page list feeds `pdf_read`; and the `pdf-parse` borrowed from `pa-rag` still resolves |
+| pa-pdf selftest (offsets + windowing + search + render) | `pdf_map` reports a PDF's shape without returning its text; per-page offsets address the right page (the contract `pdf_read`/`pdf_search` will rest on); pages with no text layer are reported rather than silently empty; `pdf_read` windows are bounded, stop on a page boundary and hand back a continuation cursor that round-trips without overlap; `pdf_search` maps match offsets back to the right page, stays literal by default, and its page list feeds `pdf_read`; `pdf_render` rasterises a real PNG, caches per (page, dpi), and warns when a page already has text; and the `pdf-parse` borrowed from `pa-rag` still resolves |
 | pa-anthropic-oauth selftest (survives session replacement) | `/resume` used to kill pi with "This extension ctx is stale after session replacement or reload": the usage poller's 60s interval was started in `session_start` with no `session_shutdown`, so it outlived its session and hit the throwing `ctx.ui` getter from a timer callback. Asserts no uncaught throw across three sessions, and no timer/stdout-listener pile-up |
+| CloakBrowser is a free release (tag) | the baked `/opt/cloakbrowser/RELEASE_TAG` is not a `-pro` build — the Chromium version alone cannot distinguish them, and a Pro binary baked without a licence fails at runtime, long after the build looked fine |
 | yousoro-browse selftest (fingerprint + detection) | runs `pa-yousoro-browse/selftest.mjs` in a real Chromium: asserts the fingerprint init script (webdriver=false, no leaked navigator own-props, userAgentData=Google Chrome, non-SwiftShader WebGL, spoofed hardwareConcurrency/platform/screen/dpr, stable canvas noise) and that block/challenge detection keys off visible text not raw HTML (the 403-then-redirect fix) |
 | no host append -> target equals baked base | merge falls back to base when no host file staged |
 | host append is merged first | staged host append leads the assembled file |

@@ -1,8 +1,9 @@
 # Reading PDFs: `pa-pdf`
 
-Three tools: **`pdf_map`** reports the *shape* of a PDF and deliberately returns
+Four tools: **`pdf_map`** reports the *shape* of a PDF and deliberately returns
 none of its text; **`pdf_search`** finds which pages mention something;
-**`pdf_read`** returns a bounded window of pages.
+**`pdf_read`** returns a bounded window of pages; **`pdf_render`** rasterises
+scanned pages so `inspect_image` can read them.
 
 The intended loop is **map → search → read**. On a 300-page manual (~12,200
 tokens of text):
@@ -149,9 +150,69 @@ short. The threshold is therefore small (10 chars, enough to absorb a scan whose
 page number is stamped as real text) and detects "no text layer", not "not much
 text".
 
-OCR is **not** available in this image (`pdftoppm` and `tesseract` are both
-absent), which is exactly why these pages are reported explicitly rather than
-returned as empty text. Wiring scanned pages through `inspect_image` is stage 4.
+Those pages are handled by `pdf_render` — see below.
+
+## `pdf_render`: scanned pages, read by the vision model
+
+```
+pdf_render(path, pages="2")
+
+Rendered 1 page of /tmp/invoice.pdf at 150 dpi:
+  p.2  /tmp/pa-pdf-cache/f931e511fdc19b31-p2-r150.png  (35 KB)
+
+Read them with inspect_image on each path above.
+```
+
+Then `inspect_image` on that path returns, verified end to end:
+
+```
+INVOICE 44821
+Acme Robotics Ltd
+Widget assembly  QTY 12
+TOTAL DUE $4,317.50
+```
+
+### Why it renders instead of OCR-ing
+
+The image is the deliverable, not text. This sandbox already has a vision tool
+and an established idiom: `screenshot_url` writes a PNG and returns its path,
+`detect_ui_elements` crops to a box and hands it to `inspect_image`. Doing the
+same here avoids duplicating `pa-inspect-image`'s model-registry resolution,
+keeps the expensive step under the caller's control, and means a better vision
+model improves OCR for free — with no tesseract and no language packs.
+
+It is also why the tool is **`pdf_render`, not `pdf_ocr`**: it returns images.
+Naming it for an output it does not produce is a lie the model would act on.
+
+### Guards
+
+- **`pages` is required.** Every rendered page costs a separate vision call, so
+  there is no "render the document" default.
+- **At most 10 pages per call**, with the remainder reported as not rendered.
+- **Renders are cached** per `(document, page, dpi)`, so re-reading a page is
+  free. A different dpi is a different cache entry.
+- **dpi is clamped** to 50–300 (default 150).
+- **Rendering a page that already has text is flagged**: *"page 1 already has
+  extractable text — pdf_read is cheaper and more accurate than reading the
+  image."* The agent cannot tell otherwise, and would silently burn a vision
+  call on text we already have.
+- **20s per-page timeout**, so a pathological page cannot wedge the tool.
+
+`-singlefile` is not optional in the `pdftoppm` invocation: without it the page
+number is zero-padded to the width of the document's last page (page 7 of 300
+becomes `pad-007.png`), so the output filename would depend on the page count.
+
+### Image cost
+
+`poppler-utils` is added in `scripts/install-system-deps.sh`. That script uses
+`--no-install-recommends`, which matters here: `poppler-data` (13 MB of CJK
+encoding tables) is a *Recommends* of `libpoppler147` and is therefore skipped.
+Actual cost is roughly **9.6 MB** — `libpoppler147` (4.9 MB), `poppler-utils`
+(0.7 MB) and image codecs (libtiff, libwebp, libjpeg, libopenjp2, lcms2).
+
+Skipping `poppler-data` is safe for this use: it supplies CJK *font/encoding*
+tables, and a scanned page is a raster image with no fonts to resolve. A
+text-bearing CJK PDF is read through `pdf_read`, which never touches poppler.
 
 ## Dependency: pdf-parse is borrowed, not duplicated
 

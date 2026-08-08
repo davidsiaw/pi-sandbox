@@ -100,6 +100,25 @@ Expected. A multi-platform build produces a manifest list the local daemon
 can't load. Build a single platform with `--load` for local testing, or pull
 the pushed image. See [building.md](building.md) and [testing.md](testing.md).
 
+## Build fails: "Could not find a free CloakBrowser release"
+
+Usually a **GitHub API rate limit**, not a licensing change:
+
+```bash
+curl -s https://api.github.com/rate_limit    # "remaining": 0 means this is it
+```
+
+Unauthenticated requests get 60/hour/IP, and anything else on the same IP spends
+the same budget. Wait for the reset, set `GITHUB_TOKEN`, or pin the version
+(which needs a single API call):
+
+```bash
+CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.5 sh build.sh
+```
+
+See [cloakbrowser.md](cloakbrowser.md#building-the-image) for why the old script
+misreported this as "the latest releases appear to be Pro-only".
+
 ## The image is huge
 
 Chromium + its dependencies add roughly 0.5–1 GB. That's inherent to bundling a

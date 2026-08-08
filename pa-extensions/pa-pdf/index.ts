@@ -27,7 +27,14 @@
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { formatRanges, loadPdf, parsePageSpec, readPages, searchPages } from "./pdf.ts";
+import {
+	formatRanges,
+	loadPdf,
+	parsePageSpec,
+	readPages,
+	renderPages,
+	searchPages,
+} from "./pdf.ts";
 
 /**
  * Default output budget in characters. ~8k chars is roughly 2k tokens — several
@@ -102,6 +109,26 @@ const PdfSearchParams = Type.Object({
 	),
 	max_results: Type.Optional(
 		Type.Number({ description: "Maximum snippets to return (default 20, max 200)." }),
+	),
+});
+
+const PdfRenderParams = Type.Object({
+	path: Type.String({
+		description:
+			"Path to a PDF file: workspace-relative or absolute. A leading @ is ignored.",
+	}),
+	pages: Type.String({
+		description:
+			'Which pages to render: "3", "3-5", or "1,4,9". Required — rendering is only ' +
+			"worth doing for specific pages, and each one costs a vision call to read. " +
+			"At most 10 pages per call.",
+	}),
+	dpi: Type.Optional(
+		Type.Number({
+			description:
+				"Rasterisation resolution (default 150, min 50, max 300). Raise it if the vision " +
+				"model cannot read small print; it makes bigger images.",
+		}),
 	),
 });
 
@@ -337,6 +364,73 @@ export default function pdfExtension(pi: ExtensionAPI): void {
 					pagesMatched: result.pagesMatched,
 					truncated: result.truncated,
 					textPath: doc.textPath,
+				},
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "pdf_render",
+		label: "Render PDF Pages",
+		description:
+			"Render PDF pages to PNG images and return their file paths. Use this for scanned " +
+			"pages that pdf_map reported as having no text layer: render them, then read each " +
+			"PNG with inspect_image. It returns image paths, not text.",
+		promptSnippet: "Turn scanned PDF pages into PNGs so a vision model can read them",
+		promptGuidelines: [
+			"Only use pdf_render for pages with NO text layer (pdf_map lists them). For pages with text, pdf_read is far cheaper.",
+			"It returns PNG paths, not text — follow it with inspect_image on each path to actually read the page.",
+			"Each rendered page costs a separate vision call, so render the few pages you need, not a range.",
+		],
+		parameters: PdfRenderParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const raw = params.path.startsWith("@") ? params.path.slice(1) : params.path;
+			const abs = isAbsolute(raw) ? raw : resolvePath(ctx.cwd, raw);
+
+			const doc = await loadPdf(abs);
+			const selection = parsePageSpec(params.pages, doc.numpages);
+			const { rendered, dropped, dpi } = renderPages(doc, selection, { dpi: params.dpi });
+
+			const lines: string[] = [];
+			lines.push(
+				`Rendered ${rendered.length} page${rendered.length === 1 ? "" : "s"} of ${abs} at ${dpi} dpi:`,
+			);
+			for (const r of rendered) {
+				lines.push(
+					`  p.${r.page}  ${r.path}  (${Math.round(r.bytes / 1024)} KB${r.cached ? ", cached" : ""})`,
+				);
+			}
+
+			// Spending a vision call on a page whose text we already have is pure
+			// waste, and the agent cannot tell without being told.
+			const withText = rendered.filter((r) => r.hasText).map((r) => r.page);
+			if (withText.length > 0) {
+				lines.push(
+					"",
+					`Note: page${withText.length === 1 ? "" : "s"} ${formatRanges(withText)} already ` +
+						`ha${withText.length === 1 ? "s" : "ve"} extractable text — pdf_read is cheaper ` +
+						"and more accurate than reading the image.",
+				);
+			}
+
+			if (dropped.length > 0) {
+				lines.push(
+					"",
+					`Only the first 10 pages were rendered. Not rendered: ${formatRanges(dropped)}.`,
+				);
+			}
+
+			lines.push("", "Read them with inspect_image on each path above.");
+
+			return {
+				content: [{ type: "text", text: lines.join("\n") }],
+				details: {
+					source: abs,
+					dpi,
+					rendered: rendered.map((r) => ({ page: r.page, path: r.path, bytes: r.bytes })),
+					pagesRendered: rendered.map((r) => r.page),
+					pagesWithText: withText,
+					notRendered: dropped,
 				},
 			};
 		},

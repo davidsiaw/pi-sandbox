@@ -70,12 +70,65 @@ The image will automatically download the Pro binary at runtime if the license k
 The CloakBrowser version is automatically fetched from GitHub Releases during build:
 
 ```bash
-# Build with latest free binary
+# Build with the newest free binary
 sh build.sh
 
-# Or pin a specific version (if needed)
-CLOAKBROWSER_VERSION=0.4.12 sh build.sh
+# Or pin an exact release tag
+CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.5 sh build.sh
 ```
+
+Tags look like `chromium-v146.0.7680.177.5`; Pro releases carry a `-pro` suffix
+and auto-detection skips them. (An earlier version of this doc suggested
+`CLOAKBROWSER_VERSION=0.4.12` — that tag format does not exist and would fail
+with "release not found".)
+
+**The image pins an exact tag by default** (`ARG CLOAKBROWSER_VERSION` in the
+Dockerfile). The pin lives there rather than in `build.sh` because CI calls
+`docker/build-push-action` directly and never goes through `build.sh` — a pin in
+the script would leave CI builds drifting.
+
+Why pin, given auto-detection works? Reproducibility: `build.sh` publishes
+`davidsiaw/pi-sandbox:<pi-version>`, and without a pin two builds of the *same*
+tag can ship different browsers. It costs nothing today — CloakHQ's 148 and 150
+lines are Pro-only, so auto-detection resolves to the pinned tag anyway. (It does
+**not** save an API call: both paths now make exactly one.)
+
+The pin does not follow upstream on its own. The nightly `check` job compares it
+against the newest free release and **files an issue** when it falls behind — not
+a warning annotation, which nobody reads on a green run, and not an automatic
+bump, because a push to master publishes to Docker Hub and would ship an
+untested browser as `:latest`.
+
+### "Could not find a free CloakBrowser release" is usually a rate limit
+
+If the build fails with:
+
+```
+ERROR: Could not find a free CloakBrowser release for linux-x64
+The latest releases appear to be Pro-only.
+```
+
+**check your GitHub API quota before believing it.** Unauthenticated requests are
+limited to **60/hour/IP**. When the limit is hit, the API returns
+`{"message":"API rate limit exceeded"}`, which parses to zero releases — and the
+old script reported that as a licensing problem, sending you to CloakHQ's
+release page instead of to your API budget.
+
+```bash
+curl -s https://api.github.com/rate_limit     # "remaining": 0 means this is your problem
+```
+
+The installer now names this failure correctly. Three things make it much less
+likely in the first place:
+
+- it makes **one** API call instead of ~21 (the release list already embeds each
+  release's assets; the old script re-fetched every tag individually, and a
+  multi-arch build doubled that to ~42 against a limit of 60),
+- it honours **`GITHUB_TOKEN`** if set (60/hour → 5000/hour),
+- pinning `CLOAKBROWSER_VERSION` needs only a single tag lookup.
+
+Note that anything else sharing your public IP spends the same quota — including
+an agent doing GitHub research in the sandbox.
 
 ## Troubleshooting
 

@@ -79,6 +79,10 @@ run 'ls /opt/ms-playwright'| grep -q 'chromium'          && pass "chromium prese
 # commandExists() and never downloads into the ephemeral ~/.pi/agent/bin.
 run 'command -v rg >/dev/null 2>&1 && echo RG_OK'      | grep -q RG_OK && pass "ripgrep on PATH" || fail "ripgrep missing from PATH"
 run 'command -v fdfind >/dev/null 2>&1 && echo FD_OK'  | grep -q FD_OK && pass "fd (fdfind) on PATH" || fail "fd missing from PATH"
+# pdftoppm (poppler-utils) is what pa-pdf's pdf_render uses to rasterise scanned
+# pages for inspect_image. Without it, scanned PDFs are unreadable.
+run 'command -v pdftoppm >/dev/null 2>&1 && echo PDFTOPPM_OK' | grep -q PDFTOPPM_OK \
+  && pass "pdftoppm on PATH (poppler-utils)" || fail "pdftoppm missing from PATH"
 # Ask pi's own tools-manager where it resolves fd/rg: must be a system binary
 # (not a path under ~/.pi/agent/bin), which is what suppresses the download.
 out="$(run 'node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/utils/tools-manager.js").then(m=>{const fd=m.getToolPath("fd"),rg=m.getToolPath("rg");const bad=[fd,rg].some(p=>!p||p.includes(".pi/agent/bin"));process.stdout.write(bad?("BAD fd="+fd+" rg="+rg):"TOOLS_ON_PATH")})'\'' ')"
@@ -369,7 +373,7 @@ fi
 # pa-rag dependency change breaks pa-pdf at a distance.
 out="$(run 'cd /opt/pa/extensions/pa-pdf && node selftest.mjs 2>&1')"
 if echo "$out" | grep -q 'selftest: all checks passed'; then
-  pass "pa-pdf selftest (offsets + windowing + search + scanned detection)"
+  pass "pa-pdf selftest (offsets + windowing + search + render)"
 else
   fail "pa-pdf selftest failed"
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
@@ -433,6 +437,19 @@ if echo "$out" | grep -q 'CLOAKBROWSER_OK'; then
   pass "CloakBrowser binary present and executable"
 else
   fail "CloakBrowser binary missing or not executable"
+fi
+
+# Which release actually got baked. The Chromium version alone cannot tell a
+# free build from a Pro one, and a Pro binary baked without a licence fails at
+# RUNTIME -- long after the build looked fine. install-cloakbrowser.sh records
+# the resolved tag for exactly this check.
+out="$(run 'cat /opt/cloakbrowser/RELEASE_TAG 2>/dev/null || echo NO_TAG')"
+if echo "$out" | grep -q 'NO_TAG'; then
+  fail "CloakBrowser RELEASE_TAG missing (install-cloakbrowser.sh should write it)"
+elif echo "$out" | grep -qi -- '-pro'; then
+  fail "CloakBrowser baked a Pro release without a licence: $(echo "$out" | tr -d '\r\n')"
+else
+  pass "CloakBrowser is a free release ($(echo "$out" | tr -d '\r\n'))"
 fi
 
 # Verify CloakBrowser can actually start and report version (non-interactive check).

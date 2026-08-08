@@ -37,6 +37,7 @@ apt-get install -y --no-install-recommends \
   zip \
   unzip \
   procps \
+  poppler-utils \
   fd-find \
   ripgrep \
   less \

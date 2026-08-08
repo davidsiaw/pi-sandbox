@@ -39,6 +39,7 @@
  *   reason.
  */
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -620,6 +621,119 @@ export function searchPages(
 		pagesMatched: [...pagesMatched].sort((a, b) => a - b),
 		truncated: totalMatches > hits.length,
 	};
+}
+
+// ── Rendering pages to images (for scans) ────────────────────────────────
+
+export interface RenderedPage {
+	page: number;
+	path: string;
+	bytes: number;
+	/** True when an existing render was reused rather than re-rasterised. */
+	cached: boolean;
+	/** True when this page already has extractable text (pdf_read is cheaper). */
+	hasText: boolean;
+}
+
+/** Rasterising is cheap; the VISION CALL per page is not. Keep windows small. */
+const MAX_RENDER_PAGES = 10;
+const DEFAULT_DPI = 150;
+const MIN_DPI = 50;
+const MAX_DPI = 300;
+/** Per-page rasterise timeout. A pathological page must not wedge the tool. */
+const RENDER_TIMEOUT_MS = 20_000;
+
+let pdftoppmChecked: string | null | undefined;
+
+/** One-shot probe for pdftoppm, cached. Mirrors pi-local-rag's getOcrTooling. */
+export function findPdftoppm(): string | null {
+	if (pdftoppmChecked !== undefined) return pdftoppmChecked;
+	const probe = spawnSync("pdftoppm", ["-v"], { encoding: "utf8" });
+	pdftoppmChecked = probe.error ? null : "pdftoppm";
+	return pdftoppmChecked;
+}
+
+/**
+ * Rasterise selected pages to PNG so a vision model can read them.
+ *
+ * WHY THIS RENDERS INSTEAD OF OCR-ING
+ *   The image is the deliverable, not text. This sandbox already has a vision
+ *   tool (inspect_image) and an established idiom — screenshot_url writes a PNG
+ *   and returns its path, detect_ui_elements crops to a box and hands it to
+ *   inspect_image. Doing the same here avoids duplicating pa-inspect-image's
+ *   model-registry resolution, keeps the expensive step under the caller's
+ *   control, and means better vision models improve OCR for free.
+ *
+ *   It is also why the tool is called pdf_render rather than pdf_ocr: it returns
+ *   images. Naming it for an output it does not produce would be a lie the
+ *   model would act on.
+ *
+ * `-singlefile` is not optional. Without it pdftoppm zero-pads the page number
+ * to the width of the document's last page (page 7 of 300 becomes `pad-007.png`),
+ * so the output name depends on the page count. With it the name is exactly what
+ * we asked for.
+ */
+export function renderPages(
+	doc: PdfDoc,
+	selection: number[],
+	opts: { dpi?: number; force?: boolean } = {},
+): { rendered: RenderedPage[]; dropped: number[]; dpi: number } {
+	const bin = findPdftoppm();
+	if (!bin) {
+		throw new Error(
+			"pa-pdf: pdftoppm not found. It comes from the poppler-utils package, which the " +
+				"sandbox image installs in scripts/install-system-deps.sh. Outside the image: " +
+				"apt-get install -y poppler-utils",
+		);
+	}
+
+	const dpi = Math.max(MIN_DPI, Math.min(MAX_DPI, Math.floor(opts.dpi ?? DEFAULT_DPI)));
+	const take = selection.slice(0, MAX_RENDER_PAGES);
+	const dropped = selection.slice(MAX_RENDER_PAGES);
+
+	const dir = cacheDir();
+	const short = doc.sha.slice(0, 16);
+	const byPage = new Map(doc.pages.map((p) => [p.page, p]));
+	const rendered: RenderedPage[] = [];
+
+	for (const page of take) {
+		const root = join(dir, `${short}-p${page}-r${dpi}`);
+		const out = `${root}.png`;
+
+		if (!opts.force && existsSync(out)) {
+			rendered.push({
+				page,
+				path: out,
+				bytes: statSync(out).size,
+				cached: true,
+				hasText: (byPage.get(page)?.chars ?? 0) >= NO_TEXT_LAYER_CHARS,
+			});
+			continue;
+		}
+
+		const res = spawnSync(
+			bin,
+			["-png", "-r", String(dpi), "-f", String(page), "-l", String(page), "-singlefile", doc.source, root],
+			{ encoding: "utf8", timeout: RENDER_TIMEOUT_MS },
+		);
+
+		if (res.error || res.status !== 0 || !existsSync(out)) {
+			const why = res.error
+				? res.error.message
+				: (res.stderr || "").trim() || `pdftoppm exited ${res.status}`;
+			throw new Error(`pa-pdf: could not render page ${page} of ${doc.source}: ${why}`);
+		}
+
+		rendered.push({
+			page,
+			path: out,
+			bytes: statSync(out).size,
+			cached: false,
+			hasText: (byPage.get(page)?.chars ?? 0) >= NO_TEXT_LAYER_CHARS,
+		});
+	}
+
+	return { rendered, dropped, dpi };
 }
 
 /** Collapse [1,2,3,7,8] into "1-3, 7-8" for compact reporting. */

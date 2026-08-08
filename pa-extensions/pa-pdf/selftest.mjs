@@ -28,7 +28,7 @@
  * Usage: node selftest.mjs   (exit 0 = pass, non-zero = fail)
  */
 
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,7 +66,7 @@ try {
 	console.log(`  FAIL  pdf.ts failed to load — ${err.message}`);
 	process.exit(1);
 }
-const { loadPdf, loadPdfParse, formatRanges, PAGE_SEP, parsePageSpec, readPages, searchPages, pageAtOffset } = mod;
+const { loadPdf, loadPdfParse, formatRanges, PAGE_SEP, parsePageSpec, readPages, searchPages, pageAtOffset, renderPages, findPdftoppm } = mod;
 
 // (1) the borrowed dependency still resolves
 try {
@@ -281,6 +281,43 @@ const bleed = searchPages(doc, "CHARLIE_MARKER_THREE");
 check("search: snippet does not include the previous page's text",
 	!bleed.hits[0]?.snippet.includes("BRAVO_MARKER_TWO"), bleed.hits[0]?.snippet);
 
+// ── rendering scanned pages to images ───────────────────────────────────────
+// pdftoppm comes from poppler-utils, installed by scripts/install-system-deps.sh.
+// If it is missing in the image that is a real regression, so fail rather than skip.
+
+check("pdftoppm is available (poppler-utils)", findPdftoppm() !== null,
+	"install poppler-utils; the image does this in install-system-deps.sh");
+
+if (findPdftoppm()) {
+	const rend = renderPages(sdoc, [2], {});
+	check("render: produces a PNG for the requested page", rend.rendered.length === 1 && existsSync(rend.rendered[0].path));
+	check("render: the file is actually a PNG", (() => {
+		const sig = readFileSync(rend.rendered[0].path).subarray(0, 8);
+		return sig.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+	})(), "bad magic bytes");
+	check("render: reports the page it rendered", rend.rendered[0].page === 2);
+	check("render: flags that a scanned page has no text", rend.rendered[0].hasText === false);
+	check("render: default dpi applied", rend.dpi === 150, `got ${rend.dpi}`);
+
+	// second call reuses the render instead of rasterising again
+	const again = renderPages(sdoc, [2], {});
+	check("render: second call is served from cache", again.rendered[0].cached === true);
+
+	// dpi is clamped, and a different dpi is a different cache entry
+	const hi = renderPages(sdoc, [2], { dpi: 9000 });
+	check("render: absurd dpi is clamped", hi.dpi === 300, `got ${hi.dpi}`);
+	check("render: different dpi renders a separate file", hi.rendered[0].path !== rend.rendered[0].path);
+
+	// a page WITH text is flagged, so the agent does not burn a vision call
+	const textPage = renderPages(sdoc, [1], {});
+	check("render: flags a page that already has extractable text", textPage.rendered[0].hasText === true);
+
+	// the per-call page cap is enforced
+	const many = renderPages(doc, [1, 2, 3], {});
+	check("render: renders each requested page", many.rendered.length === 3);
+	check("render: nothing dropped under the cap", many.dropped.length === 0);
+}
+
 // ── the tools register and behave ───────────────────────────────────────────
 
 try {
@@ -289,10 +326,11 @@ try {
 	const pi = { registerTool: (t) => tools.push(t), on() {}, registerCommand() {}, registerProvider() {} };
 	(ext.default ?? ext)(pi);
 	const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
-	check("registers all three tools", tools.length === 3, `got ${tools.map((t) => t.name).join(",")}`);
+	check("registers all four tools", tools.length === 4, `got ${tools.map((t) => t.name).join(",")}`);
 	check("pdf_map is registered", !!byName.pdf_map);
 	check("pdf_read is registered", !!byName.pdf_read);
 	check("pdf_search is registered", !!byName.pdf_search);
+	check("pdf_render is registered", !!byName.pdf_render);
 
 	const res = await byName.pdf_map.execute("t1", { path: threePage }, null, () => {}, { cwd: SANDBOX });
 	const out = res.content.map((c) => c.text).join("\n");
@@ -351,6 +389,19 @@ try {
 
 	const rmiss = await byName.pdf_search.execute("t8", { path: threePage, query: "NOT_IN_DOC_XYZ" }, null, () => {}, { cwd: SANDBOX });
 	check("pdf_search: no matches is a normal result", /No matches/.test(rmiss.content[0].text));
+
+	if (findPdftoppm()) {
+		const rr2 = await byName.pdf_render.execute("t10", { path: scanned, pages: "2" }, null, () => {}, { cwd: SANDBOX });
+		const rtxt = rr2.content.map((c) => c.text).join("\n");
+		check("pdf_render returns a PNG path", /\.png\b/.test(rtxt), rtxt);
+		check("pdf_render points at inspect_image", /inspect_image/.test(rtxt));
+		check("pdf_render details list rendered pages", rr2.details?.pagesRendered?.join(",") === "2");
+
+		// rendering a text page should warn that pdf_read is cheaper
+		const rr3 = await byName.pdf_render.execute("t11", { path: scanned, pages: "1" }, null, () => {}, { cwd: SANDBOX });
+		check("pdf_render warns when the page already has text",
+			/pdf_read is cheaper/.test(rr3.content[0].text), rr3.content[0].text);
+	}
 
 	// on a scanned document, a miss must explain that the pages are unsearchable
 	const rscan = await byName.pdf_search.execute("t9", { path: scanned, query: "anything" }, null, () => {}, { cwd: SANDBOX });

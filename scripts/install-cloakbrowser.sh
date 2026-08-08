@@ -1,18 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install the latest FREE CloakBrowser version
-# Automatically detects and downloads the last free release (before Pro-only)
+# Install CloakBrowser. By default it picks the newest FREE release; set
+# CLOAKBROWSER_VERSION to pin an exact tag (e.g. chromium-v146.0.7680.177.5).
+#
+# ---------------------------------------------------------------------------
+# WHY THIS MAKES EXACTLY ONE API CALL
+#
+# The previous version fetched the release list and then re-fetched EVERY tag
+# individually to look at its assets -- about 21 calls per build, doubled to ~42
+# by a multi-arch build, against GitHub's unauthenticated limit of 60/hour/IP.
+# Two builds in an hour exhausted the quota on their own.
+#
+# When that happened the API returned {"message":"API rate limit exceeded..."},
+# which parsed to zero tags, and the script reported:
+#
+#     ERROR: Could not find a free CloakBrowser release for linux-x64
+#     The latest releases appear to be Pro-only.
+#
+# That is a misdiagnosis of a rate limit, and it sends you looking at CloakHQ's
+# release policy instead of at your API budget. Both problems are fixed here:
+# the list response already embeds each release's assets, so one call is enough,
+# and a rate-limit response is now detected and reported as itself.
+#
+# Parsing is done with node (installed earlier in the Dockerfile by
+# install-node-system.sh) rather than grep/sed, because picking an asset out of
+# nested JSON with line-oriented tools is how the fragility started.
+# ---------------------------------------------------------------------------
 
 CLOAKBROWSER_DIR="/opt/cloakbrowser"
 BINARY_NAME="cloakbrowser-bin"
+REPO="CloakHQ/CloakBrowser"
 
-echo "Installing latest FREE CloakBrowser to ${CLOAKBROWSER_DIR}..."
+echo "Installing CloakBrowser to ${CLOAKBROWSER_DIR}..."
 
 mkdir -p "${CLOAKBROWSER_DIR}"
 cd "${CLOAKBROWSER_DIR}"
 
-# Detect architecture
 ARCH="$(uname -m)"
 if [ "$ARCH" = "x86_64" ]; then
   PLATFORM="linux-x64"
@@ -25,99 +49,121 @@ fi
 
 echo "Architecture: ${ARCH} (${PLATFORM})"
 
-# An explicit CLOAKBROWSER_VERSION pins one tag and skips auto-detection.
-# Empty (the default) means "scan releases for the newest free one".
 PINNED_VERSION="${CLOAKBROWSER_VERSION:-}"
+
+# The Dockerfile pins a tag by default, and build.sh only forwards a NON-empty
+# CLOAKBROWSER_VERSION -- so there would otherwise be no way to ask for
+# auto-detection from the command line. "auto" is that escape hatch.
+if [ "${PINNED_VERSION}" = "auto" ] || [ "${PINNED_VERSION}" = "latest-free" ]; then
+  PINNED_VERSION=""
+fi
+
+# An authenticated request gets 5000/hour instead of 60. CI usually has a token
+# already; nothing here requires one.
+CURL_AUTH=()
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  CURL_AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  echo "Using GITHUB_TOKEN for GitHub API requests (higher rate limit)."
+fi
 
 if [ -n "${PINNED_VERSION}" ]; then
   echo "Using pinned CloakBrowser version: ${PINNED_VERSION}"
-  ALL_RELEASES=""
+  API_URL="https://api.github.com/repos/${REPO}/releases/tags/${PINNED_VERSION}"
 else
-  # Fetch all releases and find the latest FREE one
-  echo "Checking GitHub releases for latest free version..."
-  # Get all releases (sorted by date, newest first)
-  ALL_RELEASES=$(curl -sL "https://api.github.com/repos/CloakHQ/CloakBrowser/releases?per_page=20")
+  echo "Checking GitHub releases for the newest free version..."
+  API_URL="https://api.github.com/repos/${REPO}/releases?per_page=30"
 fi
 
-# Find the latest release that is NOT Pro-only
-# Pro releases typically have "-pro" in tag or require license
-FREE_RELEASE=""
-FREE_TAG=""
+RESPONSE="$(curl -sSL "${CURL_AUTH[@]}" -H "Accept: application/vnd.github+json" "${API_URL}")"
 
-if [ -n "${PINNED_VERSION}" ]; then
-  FREE_TAG="${PINNED_VERSION}"
-  FREE_RELEASE=$(curl -sL "https://api.github.com/repos/CloakHQ/CloakBrowser/releases/tags/${PINNED_VERSION}")
-  if ! echo "${FREE_RELEASE}" | grep -q '"browser_download_url"'; then
-    echo "ERROR: CloakBrowser release '${PINNED_VERSION}' not found or has no downloadable assets"
-    exit 1
-  fi
-fi
+# Select "<tag>\t<url>" for our platform, or print a diagnosis and exit non-zero.
+SELECTED="$(printf '%s' "${RESPONSE}" | node -e '
+const platform = process.argv[1];
+const pinned = process.argv[2];
+let raw = "";
+process.stdin.on("data", (d) => (raw += d));
+process.stdin.on("end", () => {
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    console.error("Could not parse the GitHub API response as JSON:");
+    console.error(raw.slice(0, 300));
+    process.exit(1);
+  }
 
-while IFS= read -r tag; do
-  [ -z "$tag" ] && continue
-  [ -n "${FREE_TAG}" ] && break
-  
-  # Skip Pro releases
-  if [[ "$tag" == *"-pro"* ]] || [[ "$tag" == *"Pro"* ]]; then
-    continue
-  fi
-  
-  # Check if this release has a free binary for our platform
-  RELEASE_INFO=$(curl -sL "https://api.github.com/repos/CloakHQ/CloakBrowser/releases/tags/${tag}")
-  
-  # Check if this release has assets for our platform
-  ASSETS=$(echo "${RELEASE_INFO}" | grep -o '"browser_download_url": *"[^"]*"' | cut -d'"' -f4 || true)
-  
-  if echo "${ASSETS}" | grep -qi "${PLATFORM}"; then
-    FREE_TAG="${tag}"
-    FREE_RELEASE="${RELEASE_INFO}"
-    echo "Found free release: ${FREE_TAG}"
-    break
-  fi
-done < <(echo "${ALL_RELEASES}" | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+  // A rate limit (or any other API error) is an object with a message, not an
+  // array of releases. Report it as itself instead of as "no free release".
+  if (!Array.isArray(data)) {
+    if (data && typeof data.message === "string") {
+      const msg = data.message;
+      if (/rate limit/i.test(msg)) {
+        console.error("GitHub API rate limit exceeded.");
+        console.error("");
+        console.error("This is NOT a CloakBrowser licensing problem. Unauthenticated");
+        console.error("requests are limited to 60/hour per IP. Either wait for the reset,");
+        console.error("set GITHUB_TOKEN, or pin CLOAKBROWSER_VERSION (which needs 1 call).");
+        console.error("Check remaining quota: curl -s https://api.github.com/rate_limit");
+        process.exit(1);
+      }
+      if (/^Not Found$/i.test(msg) && pinned) {
+        console.error(`No CloakBrowser release tagged "${pinned}".`);
+        console.error(`Tags look like: chromium-v146.0.7680.177.5`);
+        console.error(`Browse them: https://github.com/${"CloakHQ/CloakBrowser"}/releases`);
+        process.exit(1);
+      }
+      console.error(`GitHub API error: ${msg}`);
+      process.exit(1);
+    }
+    // A single release object (the pinned path) is valid; wrap it.
+    data = [data];
+  }
 
-if [ -z "${FREE_TAG}" ]; then
-  echo "ERROR: Could not find a free CloakBrowser release for ${PLATFORM}"
-  echo ""
-  echo "The latest releases appear to be Pro-only."
-  echo "Options:"
-  echo "  1. Set CLOAKBROWSER_LICENSE_KEY to use Pro binaries"
-  echo "  2. Manually specify a version: CLOAKBROWSER_VERSION=0.4.12 sh build.sh"
-  echo "  3. Check releases: https://github.com/CloakHQ/CloakBrowser/releases"
+  const isPro = (tag) => /-pro$/i.test(tag) || /\bpro\b/i.test(tag);
+  const assetFor = (rel) =>
+    (rel.assets || []).find(
+      (a) => typeof a.name === "string" &&
+        a.name.includes(platform) &&
+        /\.(tar\.gz|zip)$/.test(a.name),
+    );
+
+  for (const rel of data) {
+    const tag = rel && rel.tag_name;
+    if (!tag) continue;
+    // Only skip Pro when auto-detecting: an explicit pin is the caller saying
+    // they know what they want (e.g. they hold a licence).
+    if (!pinned && isPro(tag)) continue;
+    if (rel.draft) continue;
+    const asset = assetFor(rel);
+    if (asset) {
+      process.stdout.write(`${tag}\t${asset.browser_download_url}`);
+      return;
+    }
+  }
+
+  console.error(`No CloakBrowser build for ${platform} in the releases checked.`);
+  console.error("Tags seen: " + data.map((r) => r && r.tag_name).filter(Boolean).join(", "));
+  process.exit(1);
+});
+' "${PLATFORM}" "${PINNED_VERSION}")"
+
+RELEASE_TAG="${SELECTED%%$'\t'*}"
+DOWNLOAD_URL="${SELECTED#*$'\t'}"
+
+if [ -z "${RELEASE_TAG}" ] || [ -z "${DOWNLOAD_URL}" ]; then
+  echo "ERROR: could not resolve a CloakBrowser download URL"
   exit 1
 fi
 
-echo "Using free release: ${FREE_TAG}"
-
-# Extract the tarball name
-TARBALL=""
-DOWNLOAD_URL=""
-
-# Try common naming patterns
-for pattern in "cloakbrowser-${PLATFORM}" "CloakBrowser-${PLATFORM}" "${PLATFORM}"; do
-  MATCH=$(echo "${FREE_RELEASE}" | grep -o "\"browser_download_url\": *\"[^\"]*${pattern}[^\"]*\"" | head -1 | cut -d'"' -f4 || true)
-  if [ -n "${MATCH}" ]; then
-    TARBALL=$(basename "${MATCH}")
-    DOWNLOAD_URL="${MATCH}"
-    break
-  fi
-done
-
-if [ -z "${DOWNLOAD_URL}" ]; then
-  echo "ERROR: No compatible binary found in release ${FREE_TAG}"
-  echo "Available assets:"
-  echo "${FREE_RELEASE}" | grep -o '"browser_download_url": *"[^"]*"' | head -5
-  exit 1
-fi
-
+echo "Using release: ${RELEASE_TAG}"
 echo "Downloading: ${DOWNLOAD_URL}"
 
-if ! curl -sL "${DOWNLOAD_URL}" -o "${TARBALL}"; then
-  echo "Failed to download CloakBrowser tarball"
+TARBALL="$(basename "${DOWNLOAD_URL}")"
+if ! curl -fsSL "${DOWNLOAD_URL}" -o "${TARBALL}"; then
+  echo "Failed to download CloakBrowser from ${DOWNLOAD_URL}"
   exit 1
 fi
 
-# Extract based on file type
 if [[ "${TARBALL}" == *.tar.gz ]]; then
   tar xzf "${TARBALL}"
   rm -f "${TARBALL}"
@@ -149,23 +195,22 @@ fi
 
 chmod +x "${BINARY_NAME}"
 
-# Verify
+# Record which release this image actually shipped. Without it the only clue is
+# the Chromium version, which does not distinguish a free build from a Pro one
+# -- and a Pro binary baked without a licence fails at RUNTIME, long after the
+# build looked fine. The smoke test asserts this is not a -pro tag.
+printf '%s\n' "${RELEASE_TAG}" > "${CLOAKBROWSER_DIR}/RELEASE_TAG"
+
 echo "Verifying installation..."
 if "./${BINARY_NAME}" --version 2>/dev/null || "./${BINARY_NAME}" --help 2>&1 | head -1; then
-  echo ""
-  echo "=== CloakBrowser Installation Complete ==="
-  echo "Binary: ${CLOAKBROWSER_DIR}/${BINARY_NAME}"
-  ls -lh "${CLOAKBROWSER_DIR}/${BINARY_NAME}"
-  echo "Version: ${FREE_TAG} (latest free)"
-else
-  echo "CloakBrowser binary installed (executable exists)"
-  echo ""
-  echo "=== CloakBrowser Installation Complete ==="
-  echo "Binary: ${CLOAKBROWSER_DIR}/${BINARY_NAME}"
-  ls -lh "${CLOAKBROWSER_DIR}/${BINARY_NAME}"
-  echo "Version: ${FREE_TAG} (latest free)"
+  :
 fi
 
 echo ""
-echo "Note: This is the latest FREE version. For Pro builds and reCAPTCHA v3 0.9 score,"
-echo "set CLOAKBROWSER_LICENSE_KEY to download Pro binaries at runtime."
+echo "=== CloakBrowser Installation Complete ==="
+echo "Binary:  ${CLOAKBROWSER_DIR}/${BINARY_NAME}"
+ls -lh "${CLOAKBROWSER_DIR}/${BINARY_NAME}"
+echo "Release: ${RELEASE_TAG}"
+echo ""
+echo "Note: free builds trail the Pro line. For Pro builds and reCAPTCHA v3 0.9"
+echo "score, set CLOAKBROWSER_LICENSE_KEY to download Pro binaries at runtime."

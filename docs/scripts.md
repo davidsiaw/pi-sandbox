@@ -64,7 +64,10 @@ native gems / pip wheels (`build-essential`, `libssl-dev`, `libreadline-dev`,
 `zlib1g-dev`, `libyaml-dev`, `libffi-dev`, and friends). Those same libraries
 cover the fallback case where mise has no prebuilt for a requested version and
 compiles it from source; the common path is a prebuilt download and needs none
-of them. `sudo` is installed here; the grant is configured in
+of them. `poppler-utils` supplies `pdftoppm`, which `pa-pdf`'s `pdf_render` uses to rasterise
+scanned PDF pages for `inspect_image` (see [pdf.md](pdf.md)); `--no-install-recommends`
+keeps the 13 MB `poppler-data` CJK tables out, leaving ~9.6 MB.
+`sudo` is installed here; the grant is configured in
 `setup-home.sh`. `xvfb` is also installed so `pa-yousoro-browse` can run a headed
 Chromium behind a virtual X display (see [yousoro-browsing.md](yousoro-browsing.md)).
 

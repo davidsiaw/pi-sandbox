@@ -55,11 +55,25 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CloakBrowser. Empty CLOAKBROWSER_VERSION (the default) means "detect
-# the latest free release"; set it to pin a specific tag when auto-detection
-# picks a Pro-only release. Declared as an ARG so build.sh can forward it --
-# without this the flag was accepted and silently ignored.
-ARG CLOAKBROWSER_VERSION=
+# Install CloakBrowser, PINNED to an exact release tag.
+#
+# Pinned rather than auto-detected so the image is a function of this repo and
+# not of the calendar: build.sh publishes davidsiaw/pi-sandbox:<pi-version>, and
+# without a pin two builds of the SAME tag can ship different browsers.
+#
+# This costs nothing today -- CloakHQ's 148 and 150 lines are Pro-only, so
+# auto-detection resolves to this very tag anyway. It also removes a smaller
+# risk: the installer skips Pro builds by matching "-pro" in the tag, and a
+# future Pro release named differently could otherwise be baked silently and
+# then fail at runtime for want of a licence.
+#
+# The pin does NOT track upstream on its own. The nightly workflow warns when a
+# newer FREE release appears (see .github/workflows/build.yml); bump this line
+# deliberately when it does.
+#
+# Override per build:  CLOAKBROWSER_VERSION=<tag> sh build.sh
+# Restore detection:   CLOAKBROWSER_VERSION=auto sh build.sh
+ARG CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.5
 COPY scripts/install-cloakbrowser.sh /tmp/install-cloakbrowser.sh
 RUN CLOAKBROWSER_VERSION="${CLOAKBROWSER_VERSION}" bash /tmp/install-cloakbrowser.sh \
  && rm /tmp/install-cloakbrowser.sh
