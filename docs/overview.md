@@ -41,9 +41,10 @@ agent in a disposable container keeps all of that mess contained:
    anywhere. See [architecture.md](architecture.md).
 
 3. **Fast repeat runs.**
-   Compiling Ruby/Python from source is slow. Those compiled runtimes are
-   cached in a named Docker volume, so you pay the cost once. See
-   [runtimes.md](runtimes.md).
+   Installed runtimes are cached in a named Docker volume, so a version is
+   fetched once and reused. These are prebuilt downloads of a few seconds each,
+   so the cache is a convenience rather than a necessity — nuking it is cheap.
+   See [runtimes.md](runtimes.md).
 
 4. **Browser automation built in.**
    Playwright + Chromium are preinstalled so the agent's web-search / browsing
@@ -67,7 +68,7 @@ agent in a disposable container keeps all of that mess contained:
 | `smoketest.sh`              | this repo                     | verifies an existing image               |
 | GitHub workflow             | this repo                     | CI build & push                          |
 | `pa` launcher               | `~/crun.d/pa` (crun toolkit)  | runs the image against the current dir   |
-| mise cache volume           | Docker named volume           | persists compiled runtimes across runs   |
+| mise cache volume           | Docker named volume           | persists installed runtimes across runs  |
 | `pa-context/`               | this repo                     | baked system-prompt guidance for the agent |
 | `pa-skills/`, `pa-extensions/` | this repo                  | skills & extensions baked into the image |
 

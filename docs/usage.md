@@ -20,7 +20,7 @@ the working directory.
 | Host path                          | Container path                                   | Mode | Why |
 |------------------------------------|--------------------------------------------------|------|-----|
 | `$PWD` (current dir)               | same path as on the host                         | rw   | your project — edits are real |
-| named volume `pi-sandbox-mise`     | `/home/agent/.local/share/mise`                  | rw   | caches compiled runtimes (see [runtimes.md](runtimes.md)) |
+| named volume `pi-sandbox-mise`     | `/home/agent/.local/share/mise`                  | rw   | caches installed runtimes (see [runtimes.md](runtimes.md)) |
 | `~/.pi/agent/skills`               | `/home/agent/.pi/agent/skills`                   | rw   | agent-authored skills persist |
 | `~/.pi/agent/extensions`           | `/home/agent/.pi/agent/extensions`               | rw   | agent-authored extensions persist |
 | `~/.pi/agent/settings.json`        | `/opt/pa/settings.host.json`                     | ro   | staged, then seeded (see below) |
@@ -283,4 +283,5 @@ cached runtimes:
 docker volume rm pi-sandbox-mise
 ```
 
-The next `pa` run recreates the volume and recompiles versions on first use.
+The next `pa` run recreates the volume and re-downloads versions on first use
+(seconds each — they are prebuilt, not compiled).

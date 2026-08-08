@@ -9,7 +9,7 @@ the non-obvious details.
 `# syntax=docker/dockerfile:1` is a parser directive, not a comment — leave it.
 
 Multipurpose sandbox for running the pi coding agent in a throwaway container.
-mise manages Ruby/Node/Python at any version, installed on demand; compiled
+mise manages Ruby/Node/Python at any version, installed on demand; installed
 runtimes are cached in a named volume by the launcher. Arbitrary-uid design:
 nothing is baked to a specific user, everything installed is root-owned and
 read-only, and only HOME, the mounted project, and the mise cache volume are
@@ -38,7 +38,7 @@ Final-image stages, in order:
    - `MISE_DATA_DIR=/home/agent/.local/share/mise`
    - `PATH=.../mise/shims:/usr/local/bin:$PATH` — shims on PATH so runtimes work
      in non-interactive `docker run` calls.
-   - `MISE_NOT_FOUND_AUTO_INSTALL=false` — do NOT silently compile a missing
+   - `MISE_NOT_FOUND_AUTO_INSTALL=false` — do NOT silently install a missing
      runtime when a shim is called; the agent installs versions explicitly.
 5. **Writable HOME + passwd/shadow appendable** (`setup-home.sh`).
 6. **Baked guidance + merge + resources** — deliberately placed *below* the
@@ -59,10 +59,12 @@ See [architecture.md](architecture.md) for the full rationale of each stage.
 
 ## scripts/install-system-deps.sh (root)
 
-OS packages needed to run mise (`curl`, `ca-certificates`, `git`), compile Ruby
-and Python from source (`build-essential`, `libssl-dev`, `libreadline-dev`,
-`zlib1g-dev`, `libyaml-dev`, `libffi-dev`, and friends), and build native gems /
-pip wheels. `sudo` is installed here; the grant is configured in
+OS packages needed to run mise (`curl`, `ca-certificates`, `git`) and to build
+native gems / pip wheels (`build-essential`, `libssl-dev`, `libreadline-dev`,
+`zlib1g-dev`, `libyaml-dev`, `libffi-dev`, and friends). Those same libraries
+cover the fallback case where mise has no prebuilt for a requested version and
+compiles it from source; the common path is a prebuilt download and needs none
+of them. `sudo` is installed here; the grant is configured in
 `setup-home.sh`. `xvfb` is also installed so `pa-yousoro-browse` can run a headed
 Chromium behind a virtual X display (see [yousoro-browsing.md](yousoro-browsing.md)).
 
@@ -285,8 +287,13 @@ uid with a temporary mise cache volume, which is removed on exit unless
 [testing.md](testing.md).
 
 Notable check internals:
-- The auto-install check drops a `.ruby-version` in a temp dir and asserts
-  `ruby` reports "command not found" (no compile).
+- The auto-install check drops a `.ruby-version` in a temp dir and asserts `ruby`
+  refuses to run it. The exact wording depends on volume state — "command not
+  found" on a fresh volume (no shims exist yet, since `shims/` lives inside the
+  volume) versus "Tool not installed" once shims are present — so it accepts
+  either and separately asserts `installs/ruby` is still empty. Asserting on
+  `mise ls` output instead does not work: it also lists versions that are merely
+  *requested* by config, so a version that was never installed appears there.
 - The merge checks use the baked base file itself as a stand-in host append; the
   sentinel string `沙盒之境` (the first heading) proves host content leads, and a
   count of 2 proves both host and base are present.

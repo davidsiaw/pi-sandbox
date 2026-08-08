@@ -46,7 +46,7 @@ three candidate locations for a default and two of them silently lose it:
 | `/etc/mise/config.toml` | **Survives.** Root-owned, baked into the image, outside both. |
 
 So an agent could run `mise use -g ruby@3.4.10`, use it happily, and find the
-setting gone in the next session — while the compiled Ruby was still sitting in
+setting gone in the next session — while the installed Ruby was still sitting in
 the volume. The shim then reported `No version is set for shim: ruby`, which
 reads like a broken install rather than a missing one-line default.
 
@@ -74,10 +74,16 @@ idiomatic_version_file_enable_tools = ["ruby", "node", "python"]
 Verified precedence: in a directory with `.ruby-version` = 3.3.5 the shims
 resolve 3.3.5; outside it, 3.4.
 
-### On a cache volume that has never built Ruby
+### On a cache volume that has never installed Ruby
 
-The pin selects a version, it does not install one — installs live in the
-volume. On a brand-new volume the shim says:
+**The image bakes the pin, not the runtime.** Both `installs/` *and* `shims/`
+live under `$MISE_DATA_DIR`, which is exactly where the cache volume mounts — so
+a brand-new volume has no Ruby *and no shims at all*. There is therefore no shim
+to produce a helpful error: `ruby` is a plain `command not found`. One
+`mise install ruby` (~7s, prebuilt) fixes it permanently.
+
+Once shims exist but the requested version does not, the error is the more
+helpful:
 
 ```
 mise ERROR Tool not installed for shim: ruby
@@ -85,8 +91,11 @@ Missing tool version: core:ruby@3.4
 Install all missing tools with: mise install
 ```
 
-which is actionable in one command (`mise install ruby`), unlike the bare
-`command not found` it used to produce. After that first build the volume caches
+So "Ruby 3.4 ready to go" is accurate for any volume that has installed Ruby
+once — the normal case after first use — and costs about seven seconds on one
+that hasn't. `smoketest.sh` always runs against a fresh volume and so reports
+Ruby as not-yet-installed; that is expected, and it asserts the configuration
+rather than the binary. After that first install the volume caches
 it and every later run is instant.
 
 ## PATH: activate vs shims
@@ -107,41 +116,55 @@ The old sequence was:
 Net result: a login shell had **no shims on PATH**, and since `CMD` is
 `bash -l`, pi and every process it spawned inherited that stripped `PATH`.
 
-`/etc/profile.d/mise.sh` now re-appends the shims dir at the **end** of `PATH`
-after activating. activate keeps priority (its injection is at the front), while
-shims stay available as a fallback for the two cases activate does not cover:
-processes that never ran the shell hook, and versions switched later in an
-already-running session.
+`/etc/profile.d/mise.sh` now re-prepends the shims dir after activating.
+
+**Front, not end — this is load-bearing.** Appending looks harmless and is not:
+with the shims dir sitting after `/usr/bin`, `mise use -g node@20 && node
+--version` returns the *system* v22, because `/usr/bin/node` is found first — a
+mise-selected runtime silently loses to the system one. The smoke test asserts
+the shims dir is the **first** `PATH` entry, not merely present.
+
+A duplicate shims entry further down `PATH` is harmless, so the snippet only
+prepends rather than trying to dedupe.
 
 mise also reads existing `.ruby-version`, `.nvmrc`, `.python-version`, and
 `.tool-versions` files, so dropping the sandbox into a project that already has
-one of those is recognized — but see the next section: nothing is installed
+one of those is recognized — but only because the image opts back in to the
+first three (see [`.ruby-version` had to be re-enabled](#ruby-version-had-to-be-re-enabled);
+mise ignores them by default). And see the next section: nothing is installed
 until the agent asks for it.
 
 ## No implicit auto-install
 
-By default mise will *silently compile/download* a missing runtime the moment a
-shim is called (e.g. running `ruby` in a directory with a `.ruby-version`). We
+By default mise will *silently install* a missing runtime the moment a shim is
+called (e.g. running `ruby` in a directory with a `.ruby-version`). Measured,
+not assumed: with the setting below removed, a bare `ruby` in a directory
+pinning an uninstalled 3.2.9 immediately began downloading it. The same is true
+via a second route — `mise activate` installs a bash `command_not_found_handle`
+— so both the shim path and the not-found path have to be governed by it. We
 turn that off in the image with:
 
 ```
 MISE_NOT_FOUND_AUTO_INSTALL=false
 ```
 
-So on startup nothing is built automatically. Calling `ruby`/`python`/`node`
-for an uninstalled version just reports that it is not installed, rather than
-quietly compiling it. (Ruby 3.4 is pinned as the default — see above — but the
-pin is still subject to this rule: it selects a version, it never triggers a
-build.) The agent installs runtimes **on demand, explicitly**:
+So on startup nothing is installed automatically. Calling `ruby`/`python`/`node`
+for an uninstalled version just reports that it is not installed. (Ruby 3.4 is
+pinned as the default — see above — but the pin is still subject to this rule:
+it selects a version, it never triggers an install.) The agent installs runtimes
+**on demand, explicitly**:
 
 ```bash
 mise use -g ruby@3.3.5     # installs and sets it
 mise install python@3.12   # installs without switching
 ```
 
-This keeps first startup fast and predictable — no surprise multi-minute
-compile triggered by merely entering a project. Override at runtime with
-`-e MISE_NOT_FOUND_AUTO_INSTALL=true` if you ever want the old behavior.
+This keeps entering a project predictable — no install kicked off by merely
+`cd`-ing somewhere. Note the *cost* argument for this setting is now much weaker
+than it used to be (installs are seconds, not minutes — see below); what remains
+is not wanting a network fetch and a mutated cache volume to happen implicitly.
+Override at runtime with `-e MISE_NOT_FOUND_AUTO_INSTALL=true` if you want the
+upstream behavior.
 
 ## What lives where
 
@@ -150,20 +173,29 @@ Everything mise manages sits under a single directory,
 
 ```
 ~/.local/share/mise/            <- the cache volume mounts here
-├── installs/                   <- the expensive artifacts
-│   ├── ruby/3.3.5/             <- compiled Ruby (slow to build)
-│   ├── python/3.12.x/          <- compiled Python (slow to build)
-│   └── node/20.20.2/           <- downloaded Node (prebuilt, fast)
+├── installs/                   <- the runtimes themselves
+│   ├── ruby/3.4.10/            <- prebuilt download (~7s)
+│   ├── python/3.12.x/          <- prebuilt download (~3s)
+│   └── node/20.20.2/           <- prebuilt download (seconds)
 └── shims/                      <- ruby, gem, node, npm, python, pip, ...
     └── node -> /usr/local/bin/mise
 ```
 
-- **`installs/`** holds the actual runtimes. Ruby and Python are compiled from
-  source (minutes each); Node is a prebuilt download (seconds).
+- **`installs/`** holds the actual runtimes. **All three are prebuilt downloads
+  now** — this doc previously said Ruby and Python were compiled from source and
+  took minutes each, which is no longer true. Measured in this image:
+  `mise install ruby@3.2.8` → **7.2s**, `mise install python@3.12` → **3.0s**.
+  Ruby binaries come from the [`jdx/ruby`](https://github.com/jdx/ruby) releases
+  and are verified against GitHub artifact attestations before use
+  (`✓ GitHub artifact attestations verified`), for both `x86_64_linux` and
+  `arm64_linux` — so neither arch falls back to a compile.
 - **`shims/`** are thin dispatchers that point at the mise binary and resolve
-  the right version at call time.
+  the right version at call time. Note these live **inside the volume**, which
+  is why a brand-new volume has no shims at all.
 
 Because both live under the one mounted path, caching them is a single volume.
+That cache is now a convenience rather than a necessity: losing it costs seconds
+per runtime, not minutes.
 
 ## The cache volume
 
@@ -174,7 +206,7 @@ The `pa` launcher mounts a **named** Docker volume at the mise data dir:
 ```
 
 - First time a version is requested, mise builds/downloads it into the volume.
-- Every later run reuses it — no recompilation.
+- Every later run reuses it — no re-download.
 - The volume is Docker-managed and easy to nuke: `docker volume rm pi-sandbox-mise`.
 
 A fresh named volume inherits the `0777` permissions that `setup-home.sh` set on

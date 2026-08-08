@@ -7,12 +7,13 @@
 - 三語（紅寶、結、蟒）皆 mise 掌。唯系統之結預備，居 `/usr/bin/node`，乃 pi 之命，勿犯。
 - **紅寶 3.4 已備，徑用 `ruby`／`gem`／`bundle`，勿先裝、勿改 PATH。**
   其主版釘於 `/etc/mise/config.toml`（系統之config，越窖之覆而存）。
-  若報「Tool not installed」，乃此窖初新耳，一行足矣：`mise install ruby`。
+  若報「Tool not installed」或「command not found」，乃此窖初新耳（shims 亦居窖中，
+  新窖則無），一行足矣：`mise install ruby`（預鑄之貨，約七秒，非鑄自源）。
   凡工自帶 `.ruby-version`／`.mise.toml` 者，其言為先，此乃常理。
-- 影召自裝，閉矣。召未裝之版，報其未裝，不自鑄。需則明裝：
+- 影召自裝，閉矣。召未裝之版，報其未裝，不自取。需則明裝：
     - `mise use -g ruby@3.3.5`（裝且立為主）
     - `mise install python@3.12`（裝而不易）
-  紅寶、蟒鑄自源（初次緩）；結乃預鑄之貨（速）。裝者入窖，越運而存。
+  三語皆預鑄之貨，裝之皆速（紅寶約七秒、蟒約三秒）。裝者入窖，越運而存。
 - 朝生暮死（匣去即滅）：眾 gem／npm／pip 之貨、apt 之物、`/home/agent` 之下皆亡。
   故裝棄物無忌，不污主機。
 - 存於主機者：所掛之工（居其真徑）、`~/.pi/agent/skills` 與 `~/.pi/agent/extensions`、

@@ -107,12 +107,17 @@ browser. If you don't need browsing, drop the Playwright step
 (`install-browser.sh` + the `2a` block and `PLAYWRIGHT_BROWSERS_PATH` env in the
 Dockerfile) to slim it down substantially.
 
-## First run in a project is slow
+## First run in a project installs a runtime
 
-Ruby and Python are compiled from source by mise on first use (minutes). This is
-a one-time cost per version — results are cached in the `pi-sandbox-mise`
-volume and reused on later runs. Node is a prebuilt download and is fast. See
-[runtimes.md](runtimes.md).
+Installing a runtime mise doesn't have yet is a **prebuilt download of a few
+seconds** — measured in this image: Ruby 7.2s, Python 3.0s, Node similar. It is
+cached in the `pi-sandbox-mise` volume and reused on later runs.
+
+This section used to warn that Ruby and Python were compiled from source and
+took minutes. That is no longer true; mise ships prebuilt, attestation-verified
+builds for both linux arches. If you *do* see a multi-minute build, it means no
+prebuilt exists for the exact version requested and mise fell back to compiling
+— pick a mainstream patch version to avoid it. See [runtimes.md](runtimes.md).
 
 ## Stale runtime cache
 

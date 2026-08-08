@@ -7,7 +7,7 @@ authors persist on the host.
 
 - **Ruby 3.4 ready to go**; any version of Ruby / Node / Python on demand, via [mise](https://mise.jdx.dev/)
 - **Arbitrary-uid**: one image runs correctly as any user on macOS or Linux
-- Compiled runtimes **cached** in a named volume — pay the build cost once
+- Installed runtimes **cached** in a named volume — fetch a version once, reuse it
 - **Playwright + Chromium** preinstalled for web browsing
 - Published to Docker Hub as **`davidsiaw/pi-sandbox`**
 

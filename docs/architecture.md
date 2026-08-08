@@ -7,9 +7,12 @@ How the image is assembled and why each decision was made. Read alongside the
 
 `debian:trixie-slim` (current Debian stable, glibc 2.41 — mise's prebuilt binary
 now requires glibc ≥ 2.38, which the older bookworm's 2.36 does not satisfy).
-Chosen over Alpine because Ruby and Python are compiled
-from source by mise, and glibc (Debian) avoids the musl-related build pain that
-Alpine introduces. Slim keeps the base small; we add only what we need.
+Chosen over Alpine because mise's runtimes are **glibc** binaries: Ruby and
+Python now arrive as prebuilt `*_linux` tarballs linked against glibc, which
+simply will not run on musl. (This used to be argued as "Ruby and Python are
+compiled from source, and musl makes that painful" — the conclusion is the same
+but the reason is now stronger, since on Alpine there would be no prebuilt to
+fall back to.) Slim keeps the base small; we add only what we need.
 
 ## Build stages (Dockerfile order)
 
@@ -24,9 +27,11 @@ Installs the toolchain and libraries needed to:
 - give pi its search tools on PATH (`fd-find` → `/usr/bin/fdfind`, `ripgrep` →
   `/usr/bin/rg`) so pi finds them via its system-PATH check and never downloads
   copies into the ephemeral `~/.pi/agent/bin` on every container start
-- compile Ruby and Python from source (`build-essential`, `libssl-dev`,
+- build native gems and pip wheels (`build-essential`, `libssl-dev`,
   `libreadline-dev`, `zlib1g-dev`, `libyaml-dev`, `libffi-dev`, and friends)
-- build native gems and pip wheels
+- compile a runtime from source in the rare case no prebuilt exists for a
+  requested version (the common path is a prebuilt download and needs none of
+  this)
 
 `sudo` is included so the agent *can* `apt install` an extra library mid-task if
 a build needs one. (Remove the sudo grant in `setup-home.sh`/deps if you want
@@ -76,9 +81,14 @@ regardless of user or home directory. The shims directory is also placed on
 **Implicit auto-install is disabled** via `MISE_NOT_FOUND_AUTO_INSTALL=false`
 (set in the Dockerfile). Without this, calling a shim for a version that isn't
 installed — e.g. running `ruby` in a directory containing a `.ruby-version` —
-would silently trigger a multi-minute source compile. Instead, missing runtimes
-report `command not found`, and the agent installs versions explicitly with
+silently downloads and installs it (verified). Instead, missing runtimes report
+that they are not installed, and the agent installs versions explicitly with
 `mise use` / `mise install`. See [runtimes.md](runtimes.md).
+
+This is about implicitness, not cost: installs are prebuilt downloads taking
+seconds. It also covers a second route — `mise activate` registers a bash
+`command_not_found_handle` that installs on any miss, which is what fires on a
+fresh volume where no shims exist yet.
 
 ### 4. Writable HOME — `setup-home.sh` (root)
 

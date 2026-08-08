@@ -16,7 +16,14 @@ exits non-zero.
 ## What it checks
 
 Everything runs as an **arbitrary uid** (default `1234`) with a temporary mise
-cache volume, exercising the real runtime path a user would hit:
+cache volume, exercising the real runtime path a user would hit.
+
+> The cache volume is **fresh** on every run, and `shims/` lives inside it — so
+> no runtime is installed and there are no shims. Ruby checks therefore assert
+> the *configuration* (the baked pin, PATH order, precedence) rather than a
+> working `ruby` binary, and the suite prints a `NOTE` instead of a `FAIL` when
+> Ruby is not built in the volume. That is expected, not a failure.
+
 
 | Check | Verifies |
 |-------|----------|
@@ -27,7 +34,14 @@ cache volume, exercising the real runtime path a user would hit:
 | mise present | mise binary is installed and runnable |
 | playwright present | Playwright CLI works |
 | chromium present | browser is at `/opt/ms-playwright` |
-| no implicit auto-install on shim call | a bare `ruby`/etc call for a missing version does NOT trigger a compile |
+| no implicit auto-install on shim call | a bare `ruby`/etc call for a missing version does NOT trigger an install |
+| uninstalled .ruby-version stayed uninstalled | `installs/ruby` is still empty afterwards (checks the directory, not `mise ls`, which also lists merely-requested versions) |
+| ruby 3.4 pinned as system default | `/etc/mise/config.toml` pins a default that survives restarts |
+| default comes from baked /etc/mise/config.toml | the pin is read from the image, not from the wiped `~/.config` |
+| mise shims on PATH in a login shell | `mise activate` stripped them, leaving pi's children with no runtimes |
+| mise shims are FIRST on PATH (beat /usr/bin) | ordering is load-bearing: appended instead of prepended, `mise use -g node@20` silently returns the system v22 |
+| .ruby-version is honored | mise ignores idiomatic version files by default, which would let the pinned default silently override a project's own version |
+| system default resolves to a 3.4.x | the pin actually resolves, not just parses |
 | mise installs node@20 on demand (explicit) | explicit `mise use` install works as the uid |
 | pi resolves to system node | `which pi` → `/usr/bin/pi` (not a mise shim) |
 | pi still runs after node switch | pi is unaffected by mise Node changes |

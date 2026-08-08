@@ -64,20 +64,26 @@ if command -v mise >/dev/null 2>&1; then
   eval "$(mise activate bash)"
 fi
 
-# `mise activate` REMOVES the shims dir from PATH -- activate and shims are two
-# competing resolution modes and mise refuses to run both at the front. That is
-# why the shims entry set by the Dockerfile's ENV PATH vanished in every login
-# shell: Debian's /etc/profile resets PATH, this file re-added shims, and then
-# activate stripped them again. Anything pi spawned inherited that stripped PATH
-# and saw no ruby at all.
+# Put the shims dir back at the FRONT of PATH.
 #
-# Re-append at the END so activate keeps priority (it injects the resolved tool
-# bin dir at the front) while shims remain as a fallback for two cases activate
-# does not cover: processes that never ran the shell hook, and versions switched
-# later in an already-running session.
-case ":$PATH:" in
-  *":$_mise_shims:"*) ;;
-  *) export PATH="$PATH:$_mise_shims" ;;
+# Two things conspire to remove it. Debian's /etc/profile resets PATH wholesale
+# in every login shell, discarding the entry the Dockerfile's ENV PATH sets; and
+# `mise activate` then strips the shims dir whenever its hook actually resolves
+# something, because activate and shims are competing resolution modes. The
+# result was a login shell with no shims at all -- and since CMD is `bash -l`,
+# pi and everything it spawned inherited that.
+#
+# FRONT, not end: the shims dir must beat /usr/bin, or a mise-selected runtime
+# loses to the system one. Appending instead of prepending is a silent failure
+# -- `mise use -g node@20 && node --version` returns the system v22 -- because
+# /usr/bin/node is found first. Ordering here is load-bearing; the smoke test
+# asserts the shims dir is the first PATH entry.
+#
+# A duplicate entry further down PATH (left by activate) is harmless, so this
+# only prepends rather than trying to dedupe.
+case "$PATH" in
+  "$_mise_shims":*) ;;
+  *) export PATH="$_mise_shims:$PATH" ;;
 esac
 unset _mise_shims
 EOF
