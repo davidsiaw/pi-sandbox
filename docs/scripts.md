@@ -190,9 +190,21 @@ moves; idempotent.
 
 Installs the mise binary to `/usr/local/bin/mise` (root-owned, read-only). No
 language runtimes are baked — installed on demand and cached in the mounted
-volume. Writes `/etc/profile.d/mise.sh` so every login shell activates mise and
-puts the shims on PATH; data/cache/config dirs are pointed at writable locations
-via env in the Dockerfile.
+volume. data/cache/config dirs are pointed at writable locations via env in the
+Dockerfile.
+
+Also writes two config files that make Ruby usable without ceremony:
+
+- **`/etc/mise/config.toml`** pins the default Ruby (`PA_RUBY_VERSION`, default
+  `3.4`). It has to be here: `mise use -g` writes `~/.config`, which is wiped
+  every run, and `$MISE_DATA_DIR` is shadowed by the cache volume. Only
+  `/etc` survives both.
+- **`/etc/profile.d/mise.sh`** activates mise, then re-appends the shims dir to
+  the **end** of `PATH` — `mise activate` strips it, which (combined with
+  Debian's `/etc/profile` resetting `PATH`) left login shells with no shims at
+  all.
+
+See [runtimes.md](runtimes.md) for the full rationale on both.
 
 ## scripts/setup-home.sh (root)
 

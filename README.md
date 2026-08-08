@@ -5,7 +5,7 @@ Global installs (gems, npm, pip, extra language runtimes) stay in the container
 and are nuked on exit; your project files and any skills/extensions the agent
 authors persist on the host.
 
-- Any version of **Ruby / Node / Python** on demand, via [mise](https://mise.jdx.dev/)
+- **Ruby 3.4 ready to go**; any version of Ruby / Node / Python on demand, via [mise](https://mise.jdx.dev/)
 - **Arbitrary-uid**: one image runs correctly as any user on macOS or Linux
 - Compiled runtimes **cached** in a named volume — pay the build cost once
 - **Playwright + Chromium** preinstalled for web browsing

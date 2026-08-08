@@ -91,9 +91,53 @@ note "mise         $(version_of 'mise --version')"
 note "playwright   $(version_of 'playwright --version')"
 note "cloakbrowser $(version_of '/opt/cloakbrowser/cloakbrowser-bin --version')"
 
-out="$(run 'mkdir -p /tmp/p && cd /tmp/p && echo 3.3.5 > .ruby-version; ruby -v 2>&1 || true')"
-echo "$out" | grep -qi 'command not found' \
+# A project-local .ruby-version for an UNINSTALLED version must still not
+# trigger a build. The expected message changed when /etc/mise/config.toml
+# started pinning a default: an unset tool now reports "Tool not installed"
+# rather than "command not found". What actually matters is that nothing got
+# compiled, so assert on mise's install list too.
+out="$(run 'mkdir -p /tmp/p && cd /tmp/p && echo 3.3.5 > .ruby-version; ruby -v 2>&1 || true; echo "---"; mise ls ruby 2>&1 || true')"
+echo "$out" | grep -qiE 'not installed|command not found' \
   && pass "no implicit auto-install on shim call" || fail "shim call auto-installed a runtime"
+echo "$out" | grep -q '3\.3\.5' && [ "$(echo "$out" | sed -n '/---/,$p' | grep -c '3\.3\.5')" != "0" ] \
+  && fail "ruby 3.3.5 was actually installed by the shim call" \
+  || pass "uninstalled .ruby-version stayed uninstalled"
+
+# --- Ruby is ready out of the box ------------------------------------------
+# Regression: agents used to hit "No version is set for shim: ruby" even when a
+# Ruby was sitting in the cache volume, because `mise use -g` writes
+# ~/.config/mise/config.toml, which is neither mounted nor baked and so is lost
+# on every container start. The default now lives in /etc/mise/config.toml.
+run 'mise config get tools.ruby' | grep -q '^3\.4' \
+  && pass "ruby 3.4 pinned as system default" || fail "no system-wide ruby default"
+
+# The pin must come from the baked system config, with no help from HOME.
+out="$(run 'ls ~/.config/mise/config.toml 2>&1 || true; mise config ls 2>&1')"
+echo "$out" | grep -q '/etc/mise/config.toml' \
+  && pass "default comes from baked /etc/mise/config.toml" || fail "system mise config not read"
+
+# The bug that hid Ruby even when installed: `mise activate` strips the shims
+# dir from PATH, so every process pi spawned inherited a PATH with no shims.
+run 'echo "$PATH"' | grep -q '/.local/share/mise/shims' \
+  && pass "mise shims on PATH in a login shell" || fail "mise shims missing from login-shell PATH"
+
+# A pinned default must NOT override a project's own .ruby-version. Current mise
+# ignores idiomatic version files unless opted in, which would make a repo
+# pinning 3.3.5 silently run the 3.4 default -- a worse failure than an error.
+run 'mise settings get idiomatic_version_file_enable_tools' | grep -q 'ruby' \
+  && pass ".ruby-version is honored (idiomatic version files enabled)" \
+  || fail ".ruby-version ignored: project pins would be silently overridden"
+
+# A pinned-but-uninstalled tool must give an ACTIONABLE error, never the bare
+# "command not found" that sent agents off debugging their PATH.
+out="$(run 'cd /tmp && ruby -v 2>&1 || true')"
+if echo "$out" | grep -q 'ruby 3\.4'; then
+  pass "ruby 3.4 runs from the cache volume"
+else
+  echo "$out" | grep -q 'mise install' \
+    && pass "uninstalled ruby gives an actionable 'mise install' hint" \
+    || fail "ruby neither runs nor explains how to install: $out"
+fi
 
 run 'mise use -g node@20 >/dev/null 2>&1; node --version' | grep -q '^v20\.' \
   && pass "mise installs node@20 on demand (explicit)" || fail "mise explicit install failed"

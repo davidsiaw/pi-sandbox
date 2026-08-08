@@ -36,8 +36,11 @@ ENV HOME=/home/agent
 ENV MISE_DATA_DIR=/home/agent/.local/share/mise
 ENV PATH=/home/agent/.local/share/mise/shims:/usr/local/bin:$PATH
 ENV MISE_NOT_FOUND_AUTO_INSTALL=false
+# Default Ruby, pinned system-wide in /etc/mise/config.toml by the script below.
+# Partial on purpose: mise resolves "3.4" to the newest installed 3.4.x.
+ARG PA_RUBY_VERSION=3.4
 COPY scripts/install-mise.sh /tmp/install-mise.sh
-RUN bash /tmp/install-mise.sh && rm /tmp/install-mise.sh
+RUN PA_RUBY_VERSION="${PA_RUBY_VERSION}" bash /tmp/install-mise.sh && rm /tmp/install-mise.sh
 
 COPY scripts/setup-home.sh /tmp/setup-home.sh
 RUN bash /tmp/setup-home.sh && rm /tmp/setup-home.sh

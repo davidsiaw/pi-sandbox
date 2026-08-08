@@ -16,6 +16,103 @@ mise use node@20            # in a project dir, writes .mise.toml
 mise install python@3.12
 ```
 
+## Ruby is ready out of the box
+
+Ruby **3.4** is the sandbox default. `ruby`, `gem` and `bundle` work with no
+setup, no `mise use`, and no PATH fiddling.
+
+The pin lives in a system-wide config baked into the image:
+
+```toml
+# /etc/mise/config.toml
+[tools]
+ruby = "3.4"
+```
+
+It is written by `install-mise.sh` and the version is settable at build time
+with the `PA_RUBY_VERSION` build arg. `"3.4"` is a *partial* version on purpose:
+mise resolves it to the newest installed `3.4.x`, so a cache volume that later
+builds 3.4.11 starts using it without rebuilding the image.
+
+### Why not `mise use -g`
+
+This was the actual bug behind "ruby is installed but I can't run it". There are
+three candidate locations for a default and two of them silently lose it:
+
+| Location | Fate at container start |
+|---|---|
+| `~/.config/mise/config.toml` (what `mise use -g` writes) | **Lost.** `~/.config` is neither mounted nor baked; it is recreated empty every run. |
+| anything under `$MISE_DATA_DIR` | **Shadowed.** The cache volume mounts over `/home/agent/.local/share/mise`. |
+| `/etc/mise/config.toml` | **Survives.** Root-owned, baked into the image, outside both. |
+
+So an agent could run `mise use -g ruby@3.4.10`, use it happily, and find the
+setting gone in the next session — while the compiled Ruby was still sitting in
+the volume. The shim then reported `No version is set for shim: ruby`, which
+reads like a broken install rather than a missing one-line default.
+
+Project config still wins: mise reads local (`.mise.toml`, `.ruby-version`,
+`.tool-versions`) ahead of global ahead of system, so a repo that pins its own
+Ruby is unaffected — but see the next section, which is what makes that true.
+
+### `.ruby-version` had to be re-enabled
+
+Current mise ships `idiomatic_version_file_enable_tools` as an **empty list**,
+meaning `.ruby-version`, `.node-version` and `.python-version` are *ignored* by
+default (only `.mise.toml` and `.tool-versions` are read).
+
+That was harmless while nothing was pinned — an unconfigured `ruby` was just an
+error. Combined with a default it becomes a trap: a repo pinning 3.3.5 in
+`.ruby-version` would silently run **3.4** instead. Silently-wrong-version is a
+worse failure than the not-installed error it replaced, so the system config
+opts the three back in:
+
+```toml
+[settings]
+idiomatic_version_file_enable_tools = ["ruby", "node", "python"]
+```
+
+Verified precedence: in a directory with `.ruby-version` = 3.3.5 the shims
+resolve 3.3.5; outside it, 3.4.
+
+### On a cache volume that has never built Ruby
+
+The pin selects a version, it does not install one — installs live in the
+volume. On a brand-new volume the shim says:
+
+```
+mise ERROR Tool not installed for shim: ruby
+Missing tool version: core:ruby@3.4
+Install all missing tools with: mise install
+```
+
+which is actionable in one command (`mise install ruby`), unlike the bare
+`command not found` it used to produce. After that first build the volume caches
+it and every later run is instant.
+
+## PATH: activate vs shims
+
+mise has two resolution modes and they compete. `mise activate` **removes the
+shims directory from PATH** by design, because it injects the resolved tool's
+real `bin` dir at the front instead.
+
+That interacted badly with Debian's `/etc/profile`, which *resets* `PATH`
+wholesale in every login shell — discarding the `ENV PATH` the Dockerfile sets.
+The old sequence was:
+
+1. `ENV PATH` includes `.../mise/shims` ✓
+2. Debian `/etc/profile` resets `PATH`, dropping it ✗
+3. `/etc/profile.d/mise.sh` re-adds shims ✓
+4. `mise activate` strips them again ✗
+
+Net result: a login shell had **no shims on PATH**, and since `CMD` is
+`bash -l`, pi and every process it spawned inherited that stripped `PATH`.
+
+`/etc/profile.d/mise.sh` now re-appends the shims dir at the **end** of `PATH`
+after activating. activate keeps priority (its injection is at the front), while
+shims stay available as a fallback for the two cases activate does not cover:
+processes that never ran the shell hook, and versions switched later in an
+already-running session.
+
 mise also reads existing `.ruby-version`, `.nvmrc`, `.python-version`, and
 `.tool-versions` files, so dropping the sandbox into a project that already has
 one of those is recognized — but see the next section: nothing is installed
@@ -32,8 +129,10 @@ MISE_NOT_FOUND_AUTO_INSTALL=false
 ```
 
 So on startup nothing is built automatically. Calling `ruby`/`python`/`node`
-for an uninstalled version just reports `command not found`. The agent installs
-runtimes **on demand, explicitly**:
+for an uninstalled version just reports that it is not installed, rather than
+quietly compiling it. (Ruby 3.4 is pinned as the default — see above — but the
+pin is still subject to this rule: it selects a version, it never triggers a
+build.) The agent installs runtimes **on demand, explicitly**:
 
 ```bash
 mise use -g ruby@3.3.5     # installs and sets it
