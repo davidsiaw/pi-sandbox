@@ -344,6 +344,21 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-anthropic-oauth guard: /resume used to kill pi with "This extension ctx is
+# stale after session replacement or reload" — the usage poller's 60s interval
+# was started from session_start with no session_shutdown handler, so it
+# outlived its session and the next tick hit the throwing `ctx.ui` getter from a
+# timer callback (uncaughtException, nothing to catch it). Drives three sessions
+# through the real module and asserts no uncaught throw plus no timer/listener
+# pile-up. Auth-free: no token, no network.
+out="$(run 'cd /opt/pa/extensions/pa-anthropic-oauth && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-anthropic-oauth selftest (survives session replacement)"
+else
+  fail "pa-anthropic-oauth selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 # pa-token-usage guard: CSV row/header agreement, cost-0 handling (local models
 # and subscription billing report 0, which must not become Infinity), and the
 # multi-writer append race. That race is real, not hypothetical: every container

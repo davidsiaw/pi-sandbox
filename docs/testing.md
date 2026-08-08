@@ -55,6 +55,7 @@ cache volume, exercising the real runtime path a user would hit.
 | baked skill present | a skill is baked at `/opt/pa/skills` |
 | baked extension present | an extension is baked at `/opt/pa/extensions` |
 | baked extension loads (no load error) | pi loads the baked extension without error |
+| pa-anthropic-oauth selftest (survives session replacement) | `/resume` used to kill pi with "This extension ctx is stale after session replacement or reload": the usage poller's 60s interval was started in `session_start` with no `session_shutdown`, so it outlived its session and hit the throwing `ctx.ui` getter from a timer callback. Asserts no uncaught throw across three sessions, and no timer/stdout-listener pile-up |
 | yousoro-browse selftest (fingerprint + detection) | runs `pa-yousoro-browse/selftest.mjs` in a real Chromium: asserts the fingerprint init script (webdriver=false, no leaked navigator own-props, userAgentData=Google Chrome, non-SwiftShader WebGL, spoofed hardwareConcurrency/platform/screen/dpr, stable canvas noise) and that block/challenge detection keys off visible text not raw HTML (the 403-then-redirect fix) |
 | no host append -> target equals baked base | merge falls back to base when no host file staged |
 | host append is merged first | staged host append leads the assembled file |

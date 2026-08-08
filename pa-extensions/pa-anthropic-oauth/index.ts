@@ -466,24 +466,61 @@ function formatUsageStatus(data: UsageData, maxWidth: number, theme: any): strin
 let usageData: UsageData | null = null;
 let lastStatus: string | undefined = undefined;
 
+// Every `ctx.ui` access here can throw, not just setStatus. After session
+// replacement (/resume, /new, /fork) the captured ctx is stale and the `ui`
+// GETTER itself throws "This extension ctx is stale...". The old code guarded
+// the two setStatus calls but read `ctx.ui.theme` bare, so that read was the
+// one that escaped -- from a setInterval callback, where nothing catches it, so
+// it reached the process as an uncaughtException and killed pi.
+//
+// The real fix is not running against a stale ctx at all (see stopUsagePoller /
+// session_shutdown below). This wrapper is the backstop for the race where a
+// timer fires between replacement and teardown.
 function updateUsageStatus(ctx: any): void {
-  if (!usageData) {
-    if (lastStatus !== undefined) {
-      try { ctx.ui.setStatus("anthropic-oauth-usage", undefined); } catch {}
-      lastStatus = undefined;
+  try {
+    if (!usageData) {
+      if (lastStatus !== undefined) {
+        ctx.ui.setStatus("anthropic-oauth-usage", undefined);
+        lastStatus = undefined;
+      }
+      return;
     }
-    return;
+    const termWidth = process.stdout.columns || 80;
+    const status = formatUsageStatus(usageData, termWidth, ctx.ui.theme);
+    if (status === lastStatus) return;
+    lastStatus = status;
+    ctx.ui.setStatus("anthropic-oauth-usage", status || undefined);
+  } catch {
+    // Stale ctx or no UI attached. Drop the cached render so the next live ctx
+    // repaints instead of being skipped by the `status === lastStatus` check.
+    lastStatus = undefined;
   }
-  const termWidth = process.stdout.columns || 80;
-  const status = formatUsageStatus(usageData, termWidth, ctx.ui.theme);
-  if (status === lastStatus) return;
-  lastStatus = status;
-  try { ctx.ui.setStatus("anthropic-oauth-usage", status || undefined); } catch {}
+}
+
+// Module-scoped so session_shutdown can stop the timer started by a previous
+// session_start. `pollTimer` used to be a local inside startUsagePoller: it was
+// assigned and then never readable again, so every session_start added another
+// 60s interval holding another dead ctx, and none were ever cleared.
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+function stopUsagePoller(ctx?: any): void {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = undefined;
+  }
+  (startUsagePoller as any).setActive = undefined;
+  (startUsagePoller as any).refresh = undefined;
+  // Clear the cached render, or the replacement session inherits a status line
+  // that `status === lastStatus` then refuses to repaint.
+  lastStatus = undefined;
+  usageData = null;
+  try { ctx?.ui?.setStatus?.("anthropic-oauth-usage", undefined); } catch {}
 }
 
 function startUsagePoller(pi: ExtensionAPI, ctx: any): void {
+  // Idempotent: never leave a previous session's interval running.
+  stopUsagePoller();
   let active = ctx.model?.provider === "anthropic-oauth";
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
 
   async function poll(): Promise<void> {
     const cached = readCachedUsage();
@@ -497,6 +534,10 @@ function startUsagePoller(pi: ExtensionAPI, ctx: any): void {
         if (fresh) usageData = fresh;
       }
     }
+
+    // The timer is unref'd and cleared on shutdown, but a poll already in
+    // flight can land after replacement. Bail rather than touch a dead ctx.
+    if (!pollTimer) return;
 
     if (active && usageData) {
       updateUsageStatus(ctx);
@@ -520,9 +561,9 @@ function startUsagePoller(pi: ExtensionAPI, ctx: any): void {
   };
   (startUsagePoller as any).refresh = refresh;
 
-  poll();
   pollTimer = setInterval(poll, 60_000);
   pollTimer.unref?.();
+  poll();
 }
 
 export default function (pi: ExtensionAPI) {
@@ -542,8 +583,19 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // Fires again on every /resume, /new and /fork with a FRESH ctx. Restart the
+  // poller so it binds the live ctx instead of the replaced one.
   pi.on("session_start", async (_event, ctx) => {
     startUsagePoller(pi, ctx);
+  });
+
+  // Documented requirement for anything started from session_start:
+  // "Register an idempotent session_shutdown handler to close any
+  // session-scoped resources you start." Without this the 60s interval
+  // outlived the session and fired against a stale ctx.
+  pi.on("session_shutdown", async (_event, ctx) => {
+    stopUsagePoller(ctx);
+    process.stdout.removeListener("resize", onResize);
   });
 
   pi.on("model_select", async (event, ctx) => {
@@ -551,7 +603,14 @@ export default function (pi: ExtensionAPI) {
     (startUsagePoller as any).setActive?.(isActive);
   });
 
-  process.stdout.on("resize", () => {
-    (startUsagePoller as any).refresh?.();
-  });
+  // pi re-instantiates extensions on every session replacement, so this default
+  // export runs again per /resume. Registering an anonymous listener each time
+  // leaked one stdout "resize" listener per resume (eventually tripping
+  // MaxListenersExceededWarning). Named + removed on shutdown so it is 1:1 with
+  // the session that registered it.
+  process.stdout.on("resize", onResize);
+}
+
+function onResize(): void {
+  (startUsagePoller as any).refresh?.();
 }
