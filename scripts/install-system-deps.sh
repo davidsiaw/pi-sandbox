@@ -49,6 +49,10 @@ apt-get install -y --no-install-recommends \
   fonts-dejavu \
   fonts-noto-core \
   fonts-noto-cjk \
-  fonts-noto-color-emoji
+  fonts-noto-color-emoji \
+  fonts-freefont-ttf \
+  fonts-unifont \
+  fonts-ipafont-gothic \
+  fonts-wqy-zenhei
 
 rm -rf /var/lib/apt/lists/*

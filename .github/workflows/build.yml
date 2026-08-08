@@ -110,8 +110,13 @@ jobs:
             PI_VERSION=${{ needs.check.outputs.pi_version }}
             PA_UITAG_MODEL_URL=${{ vars.PA_UITAG_MODEL_URL }}
           tags: davidsiaw/pi-sandbox:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # READ the shared cache, do not WRITE it. Both build steps previously
+          # wrote type=gha with no scope, so this amd64-only export and the
+          # multi-arch export below overwrote each other every run. Writing is
+          # left to the multi-arch step, whose cache is a superset; anything
+          # this step builds is still reused by that step through the builder's
+          # own local cache (same job, same buildx instance).
+          cache-from: type=registry,ref=davidsiaw/pi-sandbox:buildcache
 
       - name: Smoke test
         run: bash smoketest.sh
@@ -128,5 +133,17 @@ jobs:
           tags: |
             davidsiaw/pi-sandbox:latest
             davidsiaw/pi-sandbox:${{ needs.check.outputs.pi_version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry cache, not type=gha. The GitHub Actions cache is capped at
+          # 10GB per repository with LRU eviction; this image is ~3.8GB and
+          # mode=max exports every intermediate layer for BOTH architectures,
+          # so it blew the budget and evicted itself between runs -- which is
+          # why a README-only push could rebuild from apt-get.
+          #
+          # mode=max (not min) on purpose: it also caches the uitag-export
+          # stage, whose ~1GB torch install is not part of the final image and
+          # would otherwise re-run every build.
+          #
+          # image-manifest+oci-mediatypes are required for a registry cache to
+          # be stored on Docker Hub.
+          cache-from: type=registry,ref=davidsiaw/pi-sandbox:buildcache
+          cache-to: type=registry,ref=davidsiaw/pi-sandbox:buildcache,mode=max,image-manifest=true,oci-mediatypes=true

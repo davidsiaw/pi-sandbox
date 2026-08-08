@@ -12,11 +12,24 @@
 # exported rather than downloaded (upstream ships no ONNX; the only weights
 # mirror is a gated HF repo).
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM python:3.13-slim AS uitag-export
+# Pinned by MANIFEST-LIST digest, not by tag. `python:3.13-slim` is a moving
+# tag: when upstream re-pushes it, this stage's cache is invalidated and the
+# ~1GB torch install below runs again for no reason. Bump deliberately.
+# Must be the manifest-list digest, never a per-arch one, or the multi-arch
+# build loses the other architecture. Resolve with:
+#   docker buildx imagetools inspect python:3.13-slim | head -3
+# python:3.13-slim as of 2026-08-07
+FROM --platform=$BUILDPLATFORM python:3.13-slim@sha256:9662417aace5ae7b8e2609cce472b72a8958e134ba372808abe9cc1a0c0125e6 AS uitag-export
 COPY scripts/export-uitag-model.sh /tmp/export-uitag-model.sh
 RUN bash /tmp/export-uitag-model.sh /out
 
-FROM debian:trixie-slim
+# Pinned by MANIFEST-LIST digest for the same reason as the stage above, and
+# it matters more here: this is layer 1 of the final image, so a moved tag
+# invalidates EVERYTHING -- apt, node, Chromium, mise, CloakBrowser, the lot.
+# `debian:trixie-slim` was re-pushed 2026-08-05, which produces exactly the
+# "I changed a README and it rebuilt from apt-get" symptom.
+# debian:trixie-slim as of 2026-08-05
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
@@ -44,16 +57,6 @@ RUN PA_RUBY_VERSION="${PA_RUBY_VERSION}" bash /tmp/install-mise.sh && rm /tmp/in
 
 COPY scripts/setup-home.sh /tmp/setup-home.sh
 RUN bash /tmp/setup-home.sh && rm /tmp/setup-home.sh
-
-# Install fonts required for canvas fingerprinting (critical for Linux/Chrome)
-RUN apt-get update && apt-get install -y \
-    fonts-noto-color-emoji \
-    fonts-freefont-ttf \
-    fonts-unifont \
-    fonts-ipafont-gothic \
-    fonts-wqy-zenhei \
-    fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
 
 # Install CloakBrowser. Empty (the default) means "newest free release that has
 # a binary for THIS architecture".
@@ -112,7 +115,6 @@ COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
 COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
 RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
 
-COPY pa-skills /opt/pa/skills
 COPY pa-extensions /opt/pa/extensions
 
 # Install dependencies for pa-cloakbrowser extension
@@ -147,6 +149,11 @@ COPY --from=uitag-export /out/ /tmp/uitag-prebuilt/
 COPY scripts/install-uitag-model.sh /tmp/install-uitag-model.sh
 RUN PA_UITAG_MODEL_URL="${PA_UITAG_MODEL_URL}" bash /tmp/install-uitag-model.sh \
  && rm -rf /tmp/install-uitag-model.sh /tmp/uitag-prebuilt
+
+# Skills are 36KB of markdown and change often, so they sit BELOW every
+# expensive step. Copied higher up they invalidated the extension npm installs,
+# both model bakes and the pi install for a one-line doc edit.
+COPY pa-skills /opt/pa/skills
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/start-auth2api.sh /usr/local/bin/start-auth2api.sh

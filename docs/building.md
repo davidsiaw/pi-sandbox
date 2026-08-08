@@ -100,6 +100,47 @@ is built at most once.
 Steps: checkout → setup QEMU → setup buildx → log in to Docker Hub →
 build+load amd64 → smoke test → build-push both arches.
 
+### Layer cache
+
+The cache lives in a **registry** tag, `davidsiaw/pi-sandbox:buildcache`, not in
+the GitHub Actions cache:
+
+```yaml
+cache-from: type=registry,ref=davidsiaw/pi-sandbox:buildcache
+cache-to:   type=registry,ref=davidsiaw/pi-sandbox:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+```
+
+`type=gha` does not work for an image this size. The Actions cache is capped at
+**10 GB per repository** with LRU eviction; the image is ~3.8 GB and `mode=max`
+exports every intermediate layer for **both** architectures, so it exceeded the
+budget and evicted itself between runs. The symptom was a README-only push
+rebuilding from `apt-get`.
+
+Two further details worth keeping:
+
+- **Only the multi-arch step writes.** Both steps used to write `type=gha` with
+  no `scope`, so the amd64-only export and the multi-arch export overwrote each
+  other on every run. The test build now reads only; whatever it builds is still
+  reused by the push step through the builder's local cache, since both run in
+  the same job on the same buildx instance.
+- **`mode=max`, not `min`.** Only `max` caches the `uitag-export` stage, whose
+  ~1 GB torch install never appears in the final image and would otherwise
+  re-run on every build.
+
+### Base images are pinned by digest
+
+Both `FROM` lines pin a **manifest-list** digest rather than a tag.
+`debian:trixie-slim` and `python:3.13-slim` are moving tags; when upstream
+re-pushes one, every layer beneath it is invalidated — for the Debian pin that
+means apt, Node, Chromium, mise and CloakBrowser all rebuild.
+
+Bump them deliberately, and take the digest of the **list**, not of one
+architecture, or the multi-arch build loses the other arch:
+
+```bash
+docker buildx imagetools inspect debian:trixie-slim | head -3   # Digest: sha256:...
+```
+
 ### Required repository secrets
 
 | Secret               | Value |
