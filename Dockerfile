@@ -55,25 +55,24 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CloakBrowser, PINNED to an exact release tag.
+# Install CloakBrowser. Empty (the default) means "newest free release that has
+# a binary for THIS architecture".
 #
-# Pinned rather than auto-detected so the image is a function of this repo and
-# not of the calendar: build.sh publishes davidsiaw/pi-sandbox:<pi-version>, and
-# without a pin two builds of the SAME tag can ship different browsers.
+# WHY NOT PINNED: CloakHQ publishes arm64 only on some point releases. Of the
+# free 146 line, .5 ships linux-x64 only while .4/.3/.2 also ship linux-arm64.
+# A single pinned tag therefore cannot satisfy both legs of the multi-arch
+# build -- pinning .5 fails arm64 outright. Per-arch detection resolves each
+# leg to the newest release that actually has its binary, which is why the two
+# architectures can legitimately ship different point releases.
 #
-# This costs nothing today -- CloakHQ's 148 and 150 lines are Pro-only, so
-# auto-detection resolves to this very tag anyway. It also removes a smaller
-# risk: the installer skips Pro builds by matching "-pro" in the tag, and a
-# future Pro release named differently could otherwise be baked silently and
-# then fail at runtime for want of a licence.
+# Detection costs exactly ONE GitHub API request per build leg; the release
+# list embeds each release's assets. See scripts/install-cloakbrowser.sh.
 #
-# The pin does NOT track upstream on its own. The nightly workflow warns when a
-# newer FREE release appears (see .github/workflows/build.yml); bump this line
-# deliberately when it does.
-#
-# Override per build:  CLOAKBROWSER_VERSION=<tag> sh build.sh
-# Restore detection:   CLOAKBROWSER_VERSION=auto sh build.sh
-ARG CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.5
+# Pin anyway (e.g. to reproduce an old image):
+#   CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.4 sh build.sh
+# Check an exact tag has BOTH arches before pinning it, or the arm64 leg breaks.
+# The resolved tag is recorded at /opt/cloakbrowser/RELEASE_TAG in the image.
+ARG CLOAKBROWSER_VERSION=
 COPY scripts/install-cloakbrowser.sh /tmp/install-cloakbrowser.sh
 RUN CLOAKBROWSER_VERSION="${CLOAKBROWSER_VERSION}" bash /tmp/install-cloakbrowser.sh \
  && rm /tmp/install-cloakbrowser.sh

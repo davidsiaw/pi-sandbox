@@ -113,7 +113,7 @@ the same budget. Wait for the reset, set `GITHUB_TOKEN`, or pin the version
 (which needs a single API call):
 
 ```bash
-CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.5 sh build.sh
+CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.4 sh build.sh   # has both x64 and arm64
 ```
 
 See [cloakbrowser.md](cloakbrowser.md#building-the-image) for why the old script

@@ -2,9 +2,18 @@
 set -euo pipefail
 
 # Install CloakBrowser. By default it picks the newest FREE release; set
-# CLOAKBROWSER_VERSION to pin an exact tag (e.g. chromium-v146.0.7680.177.5).
+# CLOAKBROWSER_VERSION to pin an exact tag (e.g. chromium-v146.0.7680.177.4 --
+# check the tag has assets for every arch you build, or that leg fails).
 #
 # ---------------------------------------------------------------------------
+# ONE API REQUEST, AND WHY THE ARCHES CAN DIFFER
+#
+# Auto-detection picks the newest non-Pro release that actually carries a binary
+# for the CURRENT architecture. That last part is not pedantry: CloakHQ ships
+# arm64 only on some point releases (in the free 146 line, .5 is x64-only while
+# .4/.3/.2 include arm64), so the two legs of a multi-arch build can legitimately
+# resolve to different tags. Each image records what it got in RELEASE_TAG.
+#
 # WHY THIS MAKES EXACTLY ONE API CALL
 #
 # The previous version fetched the release list and then re-fetched EVERY tag
@@ -70,8 +79,12 @@ if [ -n "${PINNED_VERSION}" ]; then
   echo "Using pinned CloakBrowser version: ${PINNED_VERSION}"
   API_URL="https://api.github.com/repos/${REPO}/releases/tags/${PINNED_VERSION}"
 else
-  echo "Checking GitHub releases for the newest free version..."
-  API_URL="https://api.github.com/repos/${REPO}/releases?per_page=30"
+  echo "Checking GitHub releases for the newest free build for ${PLATFORM}..."
+  # per_page=100 is GitHub's maximum and costs the same ONE request as any
+  # smaller page. Coverage matters because arm64 is published irregularly: the
+  # newest release carrying a linux-arm64 asset can sit well down the list
+  # behind Pro-only releases and x64-only point releases.
+  API_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
 fi
 
 RESPONSE="$(curl -sSL "${CURL_AUTH[@]}" -H "Accept: application/vnd.github+json" "${API_URL}")"

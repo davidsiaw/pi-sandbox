@@ -70,11 +70,11 @@ The image will automatically download the Pro binary at runtime if the license k
 The CloakBrowser version is automatically fetched from GitHub Releases during build:
 
 ```bash
-# Build with the newest free binary
+# Newest free build for each architecture (the default)
 sh build.sh
 
-# Or pin an exact release tag
-CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.5 sh build.sh
+# Or pin an exact release tag -- check it has assets for BOTH arches first
+CLOAKBROWSER_VERSION=chromium-v146.0.7680.177.4 sh build.sh
 ```
 
 Tags look like `chromium-v146.0.7680.177.5`; Pro releases carry a `-pro` suffix
@@ -82,22 +82,46 @@ and auto-detection skips them. (An earlier version of this doc suggested
 `CLOAKBROWSER_VERSION=0.4.12` — that tag format does not exist and would fail
 with "release not found".)
 
-**The image pins an exact tag by default** (`ARG CLOAKBROWSER_VERSION` in the
-Dockerfile). The pin lives there rather than in `build.sh` because CI calls
-`docker/build-push-action` directly and never goes through `build.sh` — a pin in
-the script would leave CI builds drifting.
+### Detection is per-architecture, and the arches can differ
 
-Why pin, given auto-detection works? Reproducibility: `build.sh` publishes
-`davidsiaw/pi-sandbox:<pi-version>`, and without a pin two builds of the *same*
-tag can ship different browsers. It costs nothing today — CloakHQ's 148 and 150
-lines are Pro-only, so auto-detection resolves to the pinned tag anyway. (It does
-**not** save an API call: both paths now make exactly one.)
+The build resolves the newest non-Pro release **that actually carries a binary
+for the architecture being built**. That qualifier is load-bearing, because
+CloakHQ publishes arm64 irregularly:
 
-The pin does not follow upstream on its own. The nightly `check` job compares it
-against the newest free release and **files an issue** when it falls behind — not
-a warning annotation, which nobody reads on a green run, and not an automatic
-bump, because a push to master publishes to Docker Hub and would ship an
-untested browser as `:latest`.
+| release | assets |
+|---|---|
+| `chromium-v146.0.7680.177.5` | linux-x64, windows-x64 |
+| `chromium-v146.0.7680.177.4` | **linux-arm64**, linux-x64, windows-x64 |
+| `chromium-v146.0.7680.177.3` | **linux-arm64**, linux-x64 |
+| `chromium-v146.0.7680.177.1` | linux-x64 |
+
+So a multi-arch build legitimately ships **different point releases per arch** —
+currently `.5` on x64 and `.4` on arm64. That is not a bug to fix; it is the only
+way both legs get a binary at all.
+
+It is also why the image is **not pinned to a single tag**. Pinning `.5` looks
+reasonable and breaks the arm64 leg outright:
+
+```
+No CloakBrowser build for linux-arm64 in the releases checked.
+Tags seen: chromium-v146.0.7680.177.5
+```
+
+If you do pin — to reproduce an older image, say — **check the tag has assets for
+both arches first**. Whatever each leg resolved to is recorded in the image at
+`/opt/cloakbrowser/RELEASE_TAG`, and the smoke test asserts it is not a `-pro`
+build (a Pro binary without a licence fails at runtime, not at build time).
+
+### Request cost
+
+Detection is **one GitHub API request per build leg**. The releases list embeds
+each release's assets, so there is nothing to follow up on; `per_page=100` is
+GitHub's maximum and costs the same as any smaller page, which matters because
+the newest arm64-bearing release can sit well down the list behind Pro-only and
+x64-only releases.
+
+An earlier version of this script re-fetched every tag individually — ~21
+requests per leg, ~42 for a multi-arch build, against a limit of 60/hour.
 
 ### "Could not find a free CloakBrowser release" is usually a rate limit
 
