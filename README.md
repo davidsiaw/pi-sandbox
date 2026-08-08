@@ -11,7 +11,31 @@ authors persist on the host.
 - **Playwright + Chromium** preinstalled for web browsing
 - Published to Docker Hub as **`davidsiaw/pi-sandbox`**
 
-## Quick start
+## Usage
+
+Use with https://github.com/davidsiaw/crun.d
+
+TL;DR
+
+```bash
+# installation steps
+cd $HOME
+git clone https://github.com/davidsiaw/crun.d
+export PATH=$HOME/crun.d:$PATH
+```
+
+and add to
+
+```bash
+# .bashrc
+# maybe stuff above
+
+export PATH=$HOME/crun.d:$PATH
+
+# maybe stuff below ...
+```
+
+## Development & Testing
 
 ```bash
 # maintainer: build + push the multi-arch image
