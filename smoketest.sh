@@ -359,6 +359,22 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-pdf guard: the map -> search -> read loop. pdf_map must report a PDF's
+# shape without returning body text (a 300-page document is ~29k tokens -- the
+# failure mode is drowning the model, not hanging it); pdf_search must map match
+# offsets back to the right page and stay literal by default; pdf_read must stay
+# bounded and hand back a cursor that round-trips. Pages with no text layer must
+# be reported rather than silently returned empty.
+# Also guards the BORROW: pdf-parse comes from pa-rag's node_modules, so a
+# pa-rag dependency change breaks pa-pdf at a distance.
+out="$(run 'cd /opt/pa/extensions/pa-pdf && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-pdf selftest (offsets + windowing + search + scanned detection)"
+else
+  fail "pa-pdf selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 # pa-token-usage guard: CSV row/header agreement, cost-0 handling (local models
 # and subscription billing report 0, which must not become Infinity), and the
 # multi-writer append race. That race is real, not hypothetical: every container
