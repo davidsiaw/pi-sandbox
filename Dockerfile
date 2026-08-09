@@ -115,12 +115,37 @@ COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
 COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
 RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
 
-COPY pa-extensions /opt/pa/extensions
+# ---------------------------------------------------------------------------
+# Extension DEPENDENCIES, installed from manifests alone.
+#
+# Only package.json (and lockfile, where present) is copied here, deliberately.
+# Everything from this point down to the source COPY is expensive -- six npm
+# installs (pa-rag's tree alone is 329MB), a 23MB model download, an ONNX
+# Runtime prune, two upstream patches and a second model bake -- and none of it
+# reads extension SOURCE. Copying the whole tree first meant editing one comment
+# in one extension re-ran all of it, plus the pi install below.
+#
+# Manifests are listed one by one rather than globbed: `COPY a/*/package.json`
+# flattens and would collide. Only extensions that DECLARE dependencies need to
+# be here; the rest have nothing to install. Forgetting to add one is caught at
+# build time by the --verify pass after the source COPY, not at runtime.
+#
+# The later `COPY pa-extensions` overlays source on top and cannot remove the
+# node_modules installed here: COPY merges into the destination, and
+# .dockerignore keeps any local node_modules out of the build context.
+# ---------------------------------------------------------------------------
+COPY pa-extensions/pa-cloakbrowser/package.json    /opt/pa/extensions/pa-cloakbrowser/
+COPY pa-extensions/pa-inspect-image/package.json   /opt/pa/extensions/pa-inspect-image/
+COPY pa-extensions/pa-screenshot/package.json      /opt/pa/extensions/pa-screenshot/
+COPY pa-extensions/pa-uitag/package.json           /opt/pa/extensions/pa-uitag/
+COPY pa-extensions/pa-rag/package.json             pa-extensions/pa-rag/package-lock.json             /opt/pa/extensions/pa-rag/
+COPY pa-extensions/pa-yousoro-browse/package.json  pa-extensions/pa-yousoro-browse/package-lock.json  /opt/pa/extensions/pa-yousoro-browse/
 
-# Install dependencies for pa-cloakbrowser extension
-RUN cd /opt/pa/extensions/pa-cloakbrowser && npm install
+# pa-cloakbrowser used to get its own `npm install` here. That was redundant:
+# it declares only `dependencies` (typebox) and no devDependencies, so the
+# generic pass below already produces an identical tree.
 COPY scripts/install-extension-deps.sh /tmp/install-extension-deps.sh
-RUN bash /tmp/install-extension-deps.sh && rm /tmp/install-extension-deps.sh
+RUN bash /tmp/install-extension-deps.sh
 
 # Bake the pa-rag embedding model and strip ONNX Runtime's CUDA / foreign-platform
 # binaries. Must run in the same layer as the prune to actually shrink the image.
@@ -149,6 +174,15 @@ COPY --from=uitag-export /out/ /tmp/uitag-prebuilt/
 COPY scripts/install-uitag-model.sh /tmp/install-uitag-model.sh
 RUN PA_UITAG_MODEL_URL="${PA_UITAG_MODEL_URL}" bash /tmp/install-uitag-model.sh \
  && rm -rf /tmp/install-uitag-model.sh /tmp/uitag-prebuilt
+
+# ---------------------------------------------------------------------------
+# Extension SOURCE. Everything above this line survives a source-only edit.
+# The --verify pass asserts each extension declaring dependencies actually got a
+# node_modules, so an extension added without a manifest COPY above fails the
+# build here instead of failing at runtime when jiti cannot resolve its imports.
+# ---------------------------------------------------------------------------
+COPY pa-extensions /opt/pa/extensions
+RUN bash /tmp/install-extension-deps.sh --verify && rm /tmp/install-extension-deps.sh
 
 # Skills are 36KB of markdown and change often, so they sit BELOW every
 # expensive step. Copied higher up they invalidated the extension npm installs,
