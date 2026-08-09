@@ -18,6 +18,7 @@ the host.
 - [uitag.md](uitag.md) — the `detect_ui_elements` tool: pixel bounding boxes for UI elements so an agent can crop and inspect regions; why it is ONNX-in-Node rather than the 3 GB Python package, and the measured fidelity gap
 - [token-usage.md](token-usage.md) — the `pa-token-usage` extension: a daily CSV of tokens/cost per response, why the data lives in the host-mounted extensions dir rather than beside the code, the append-atomicity rule that lets several containers share one file, and the host-side `summarize-token-usage.rb` report
 - [rag.md](rag.md) — the `pa-rag` extension: automatic local hybrid index in `.pirag/`, what gets indexed (dotfiles, past sessions), the size gate, and how it reuses `pi-local-rag` without forking
+- [build-cache.md](build-cache.md) — why CI builds were 25m and are now 11m: the GitHub Actions 10GB cache cap, base-image tags that move, and the layer order that keeps a source edit from re-running the model bakes
 - [building.md](building.md) — `build.sh`, dual-arch builds, and the GitHub workflow
 - [testing.md](testing.md) — `smoketest.sh` and what it verifies
 - [scripts.md](scripts.md) — reference for the (comment-free) Dockerfile and scripts

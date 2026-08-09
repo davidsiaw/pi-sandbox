@@ -109,12 +109,6 @@ RUN git clone --depth 1 https://github.com/AmazingAng/auth2api /opt/auth2api && 
 # near the top, so editing one line of one extension invalidated the auth2api
 # clone+build, the global npm installs, and the 23MB model bake underneath it.
 # ---------------------------------------------------------------------------
-COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
-COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
-COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
-COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
-RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
-
 # ---------------------------------------------------------------------------
 # Extension DEPENDENCIES, installed from manifests alone.
 #
@@ -202,6 +196,20 @@ COPY pa-skills /opt/pa/skills
 # Also low, for the same cache reason as skills: docs change constantly.
 COPY docs /opt/pa/docs
 COPY README.md /opt/pa/docs/repo-README.md
+
+# The agent's baked guidance, and the entrypoint helpers that assemble it at
+# runtime. Moved down here from the top of this section simply because nothing
+# in the BUILD depends on them -- they are read only by entrypoint.sh at
+# runtime -- so they belong with the other prose rather than above six npm
+# installs, the model bakes and the patches.
+#
+# In steady state APPEND_SYSTEM.base.md rarely changes; this is not optimising
+# for churn, just putting a no-dependency COPY where it cannot cost anything.
+COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
+COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
+COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
+COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
+RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
 
 # `pa-apt`: install Debian packages without root, into a user prefix, plus the
 # profile.d wiring that puts that prefix on PATH. This is what makes sudo

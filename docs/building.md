@@ -102,6 +102,9 @@ build+load amd64 → smoke test → build-push both arches.
 
 ### Layer cache
 
+> Measured effect and the full rules: **[build-cache.md](build-cache.md)**.
+> CI went 25m -> 11m; the run that introduces a cache change is itself slow.
+
 The cache lives in a **registry** tag, `davidsiaw/pi-sandbox:buildcache`, not in
 the GitHub Actions cache:
 
