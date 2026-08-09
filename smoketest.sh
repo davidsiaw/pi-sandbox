@@ -45,6 +45,18 @@ run_clean() {
     "$IMAGE_TAG" bash -lc "$1" 2>/dev/null
 }
 
+# Like run(), but with the security flag `pa` applies BY DEFAULT. The image
+# itself still carries a NOPASSWD sudoers rule -- the restriction is a property
+# of the launcher, not of the image -- so this is the only way to test what an
+# agent actually gets. no-new-privileges makes the kernel ignore setuid, which
+# is what kills sudo; it cannot be undone from inside the container.
+run_nnp() {
+  docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+    --security-opt no-new-privileges \
+    -v "${VOLUME}:${MISE_MOUNT}" \
+    "$IMAGE_TAG" bash -lc "$1" 2>&1
+}
+
 # First line of a version command's stdout that looks like a version.
 #
 # Reads all input then picks with awk, rather than `grep -m1` or `head -1`.
@@ -177,8 +189,30 @@ echo "$out" | grep -Eq '^[0-9]+\.[0-9]+' && pass "pi still runs after node switc
 
 run 'mise ls node' | grep -q '20\.' && pass "cache volume persists node@20" || fail "cache volume did not persist runtime"
 
+# The IMAGE keeps sudo: `pa --sudo` works by simply not passing the security
+# flag, so the sudoers rule must still be there.
 run 'sudo -n true 2>&1 && echo SUDO_OK' | grep -q SUDO_OK \
-  && pass "passwordless sudo works" || fail "passwordless sudo failed"
+  && pass "passwordless sudo works (pa --sudo path)" || fail "passwordless sudo failed"
+
+# ...but the DEFAULT launcher flag must deny it, at the kernel level.
+out="$(run_nnp 'sudo -n true 2>&1 || true')"
+echo "$out" | grep -qi 'no new privileges' \
+  && pass "sudo denied under no-new-privileges (pa default)" \
+  || fail "sudo NOT denied under no-new-privileges: $out"
+
+# The whole point of denying sudo is that installing a tool must still work.
+# Uses a package with a dependency (jq needs libjq1 + libonig5) so this also
+# covers apt's dependency resolution against the image's real dpkg status, and
+# asserts the profile.d PATH wiring works with no manual activation.
+out="$(run_nnp 'pa-apt install jq >/dev/null 2>&1; jq --version 2>&1')"
+echo "$out" | grep -q '^jq-' \
+  && pass "pa-apt installs a package with deps without sudo" \
+  || fail "pa-apt failed without sudo: $out"
+
+# A package already in the image must be a no-op, not an error.
+run_nnp 'pa-apt install ripgrep 2>&1' | grep -qi 'already satisfied' \
+  && pass "pa-apt no-ops on an already-installed package" \
+  || fail "pa-apt did not detect an already-satisfied package"
 
 # /etc/passwd must be world-writable (arbitrary uid appends its own line at
 # startup); /etc/shadow must NOT be. The shadow entry carries no uid, so it is

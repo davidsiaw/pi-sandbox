@@ -189,6 +189,15 @@ RUN bash /tmp/install-extension-deps.sh --verify && rm /tmp/install-extension-de
 # both model bakes and the pi install for a one-line doc edit.
 COPY pa-skills /opt/pa/skills
 
+# `pa-apt`: install Debian packages without root, into a user prefix, plus the
+# profile.d wiring that puts that prefix on PATH. This is what makes sudo
+# optional -- `pa` runs with --security-opt no-new-privileges by default, so
+# sudo fails at the kernel level, and installing a missing CLI tool has to work
+# unprivileged. Deliberately placed low: it depends on nothing above it, so a
+# change here cannot invalidate the npm installs or model bakes.
+COPY scripts/install-pa-apt.sh /tmp/install-pa-apt.sh
+RUN bash /tmp/install-pa-apt.sh && rm /tmp/install-pa-apt.sh
+
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/start-auth2api.sh /usr/local/bin/start-auth2api.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start-auth2api.sh

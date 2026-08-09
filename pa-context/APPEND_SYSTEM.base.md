@@ -31,7 +31,14 @@
 - **求 UI 諸元之位**：既有截圖，欲知諸元何在（以裁其片而逐一察之）——用 `detect_ui_elements`。
   其返每元之 `x, y, width, height`（原圖像素，整數，可徑用於裁）。類粗而**不取其文**；
   欲知某片何言，裁至其框，乃以 `inspect_image` 察之。其流：截→求位→裁→察。
-- 無詞之 `sudo` 在，鑄時可補缺庫。慎用，其變朝生暮死。
+- **`sudo` 不在**（核所禁，非設定之誤）。需裝缺具，用 **`pa-apt install <包>`**：
+  其不需根，自解依賴，解包於 `~/.local/pa-apt`，其徑早在 PATH，裝畢即用。
+    - `pa-apt install jq`、`pa-apt list`、`pa-apt path`
+  唯一之別：包之 maintainer script 不行（無 ldconfig、無 alternatives、無 /etc 之設、
+  無服務、無證書之鉤）。凡 CLI 之具皆宜，遇真需系統整合者，寧取其源自鑄於
+  `$HOME`（`build-essential` 早備）。pa-apt 遇此必告，勿疑。
+  裝者亦朝生暮死，與昔之 `apt` 同。
+  若真需根，非汝所能自取，須告用戶以 `pa --sudo` 重啟一局；勿強試 `sudo`。
 - 欲知今夕何夕，速行 `date` 一觀，勿臆。
 
 ## 工碼十誡 · pa

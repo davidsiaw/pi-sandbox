@@ -33,8 +33,9 @@ Installs the toolchain and libraries needed to:
   requested version (the common path is a prebuilt download and needs none of
   this)
 
-`sudo` is included so the agent *can* `apt install` an extra library mid-task if
-a build needs one. (Remove the sudo grant in `setup-home.sh`/deps if you want
+`sudo` is included so that `pa --sudo` has something to run; the default launch
+denies it at the kernel level and the agent uses `pa-apt` instead (see the
+security note below). (Remove the sudo grant in `setup-home.sh`/deps if you want
 stricter isolation — see note below.)
 
 ### 2. Fixed system Node + pi — `install-node-system.sh`, `install-pi.sh` (root)
@@ -153,11 +154,33 @@ Linux and irrelevant on macOS (Docker Desktop's VM maps it anyway).
   `docker run` and could discard the `setup-home.sh` chmod. See
   [runtimes.md](runtimes.md).
 
-## Security note
+## Security note: sudo is opt-in
 
-The image grants the agent passwordless `sudo` so it can install an occasional
-missing system library during a task. This is convenient but reduces isolation:
-a task could `apt install` anything or modify the (ephemeral) container as root.
-Since the container is disposable and the host filesystem is only exposed
-through explicit mounts, this is an acceptable trade-off for a dev sandbox. If
-you want stricter isolation, remove the sudo grant and the `sudo` package.
+The image still carries a passwordless sudoers rule, but `pa` launches the
+container with `--security-opt no-new-privileges`, so the kernel ignores the
+setuid bit on `/usr/bin/sudo` and it fails:
+
+```
+sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
+```
+
+That is deliberately a **kernel** control rather than a configuration one. This
+image makes `/etc/passwd` world-writable to support the arbitrary-uid model, so
+anything that resolves privilege through files is potentially reachable by the
+agent; `no_new_privs` is a process flag it cannot clear.
+
+`pa --sudo` drops the flag for a single run, and warns on the host terminal that
+the agent has root — including over the bind-mounted project directory, which is
+the part that outlives the container. It is per-invocation by design: there is no
+sticky setting, so enabling it is always a deliberate act.
+
+**Losing sudo does not mean losing package installs.** `pa-apt install <pkg>`
+installs Debian packages, with dependency resolution, into `~/.local/pa-apt`
+without any privilege — see [scripts.md](scripts.md#scriptsinstall-pa-aptsh).
+What it cannot do is run maintainer scripts, so system integration (services,
+CA certificates, `update-alternatives`) still needs `pa --sudo`, or is better
+solved by building from source into `$HOME` or baking it into the image.
+
+Note the boundary lives in the **launcher**: a bare `docker run` of this image
+still has sudo, which is what makes the image debuggable and what `smoketest.sh`
+relies on to test both modes.

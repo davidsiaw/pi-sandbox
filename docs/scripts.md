@@ -146,6 +146,36 @@ truth. Example consumer: `pa-inspect-image` depends on
 `@silvia-odwyer/photon-node` (pure WASM, same lib pi uses) to convert images to
 PNG before sending them to the vision model.
 
+## scripts/install-pa-apt.sh (root)
+
+Bakes `/usr/local/bin/pa-apt` and `/etc/profile.d/pa-apt.sh`.
+
+`pa-apt install <pkg>` installs Debian packages **without root**. apt is not
+patched or reconfigured globally; the wrapper just:
+
+1. points apt's state at `~/.local/pa-apt/.apt` with `-o Dir::*` options (apt
+   needs root only because it writes `/var/lib/apt/lists` and `/var/cache/apt`),
+2. runs `install --download-only`, which resolves dependencies against the
+   **real** `/var/lib/dpkg/status` — so the hundreds of libraries already in the
+   image are skipped and only what is missing is fetched,
+3. replaces the privileged unpack with `dpkg -x` into the prefix.
+
+The profile.d snippet puts that prefix on `PATH`/`LD_LIBRARY_PATH`, so an
+installed tool works immediately rather than requiring the agent to remember an
+activation step.
+
+The one behavioural difference from a real install is that **maintainer scripts
+do not run** (no `ldconfig`, `update-alternatives`, `/etc` config, services, CA
+hooks). `pa-apt` detects a package shipping `postinst`/`preinst` and says so,
+so a tool that misbehaves for this reason is diagnosable rather than mysterious.
+
+Why a wrapper rather than a global `/etc/apt/apt.conf.d` snippet: config alone
+cannot help the step that actually needs root, and it would leak into the
+opt-in path — `sudo apt-get install` under `pa --sudo` would then use the
+agent's `$HOME` as its cache and litter it with root-owned files.
+
+The prefix is ephemeral, exactly as `sudo apt install` was.
+
 ## scripts/patch-rag-batch.sh (root)
 
 Runs after `install-rag-model.sh`, once `pa-rag`'s `node_modules` exist. Patches
@@ -224,7 +254,10 @@ the account against `/etc/shadow`, and without a shadow entry sudo fails with
 "account validation failure".
 
 Grants passwordless sudo to **all** users (`ALL ALL=(ALL) NOPASSWD:ALL` in
-`/etc/sudoers.d/nopasswd-all`). The container runs as an arbitrary uid, so a
+`/etc/sudoers.d/nopasswd-all`). Note this rule is inert under a normal `pa`
+launch: `--security-opt no-new-privileges` makes the kernel ignore sudo's setuid
+bit regardless of sudoers. It exists so `pa --sudo` has something to run. The
+container runs as an arbitrary uid, so a
 specific user can't be named. This lets the agent `apt install` extra
 tools/libraries during a task; changes are ephemeral. A deliberate isolation
 trade-off for a disposable sandbox — see the security note in

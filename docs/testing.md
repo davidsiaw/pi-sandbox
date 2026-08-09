@@ -47,7 +47,10 @@ cache volume, exercising the real runtime path a user would hit.
 | pi resolves to system node | `which pi` → `/usr/bin/pi` (not a mise shim) |
 | pi still runs after node switch | pi is unaffected by mise Node changes |
 | cache volume persists node@20 | the installed runtime survives across runs |
-| passwordless sudo works | the agent can `sudo apt install` during a task |
+| passwordless sudo works (pa --sudo path) | the image keeps its sudoers rule, so `pa --sudo` has something to run |
+| sudo denied under no-new-privileges (pa default) | the flag `pa` passes by default makes the kernel ignore sudo's setuid bit; verified by message, not just exit code |
+| pa-apt installs a package with deps without sudo | `jq` (needs libjq1 + libonig5) installs and runs under `no-new-privileges`, covering dependency resolution and the profile.d PATH wiring |
+| pa-apt no-ops on an already-installed package | an already-satisfied package reports so instead of erroring |
 | settings seeded with current version (no changelog) | `settings.json` gets `lastChangelogVersion` = installed pi version, so pi doesn't replay its changelog |
 | trust.json seeded writable (Trust prompt can persist) | `~/.pi/agent/trust.json` is writable, so clicking "Trust" doesn't fail on a read-only mount |
 | PI_RESUME_COMMAND=pa in image | the resume command name env is set to `pa` |
