@@ -189,6 +189,20 @@ RUN bash /tmp/install-extension-deps.sh --verify && rm /tmp/install-extension-de
 # both model bakes and the pi install for a one-line doc edit.
 COPY pa-skills /opt/pa/skills
 
+# The sandbox's own documentation, so an agent can answer "why can't I sudo?" or
+# "where do files persist?" from inside a container without being handed a repo
+# URL. Mirrors how pi ships its own docs: files on disk plus a pointer in the
+# system prompt (APPEND_SYSTEM.base.md), read on demand with the ordinary `read`
+# tool. NOT inlined into the prompt -- 17 files, ~24k words, ~32k tokens.
+#
+# The whole directory is copied so the relative cross-links between the docs
+# resolve. Baked docs describe THIS image rather than whatever master says,
+# which is the point.
+#
+# Also low, for the same cache reason as skills: docs change constantly.
+COPY docs /opt/pa/docs
+COPY README.md /opt/pa/docs/repo-README.md
+
 # `pa-apt`: install Debian packages without root, into a user prefix, plus the
 # profile.d wiring that puts that prefix on PATH. This is what makes sudo
 # optional -- `pa` runs with --security-opt no-new-privileges by default, so

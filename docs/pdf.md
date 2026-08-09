@@ -226,15 +226,10 @@ distance. So resolution walks `node_modules` explicitly, **fails loudly** with a
 actionable message naming every path it searched, and the selftest asserts it
 still resolves.
 
-Two details worth keeping:
-
-- We require `lib/pdf-parse.js`, never the package root — `pdf-parse`'s
-  `index.js` runs a debug block that reads a test PDF off disk when it thinks it
-  is not being required as a module. `pi-local-rag` avoids the root for the same
-  reason.
-- We load it with `createRequire`, not `import()`. The file is CommonJS, and a
-  dynamic import inside a function body gets hoisted by jiti's ESM→CJS
-  transform — the failure documented in `pa-rag/upstream.ts`.
+Two loading constraints are documented **in `pdf.ts` itself**, on the lines they
+protect, rather than here: which entry point to require, and why `createRequire`
+rather than `import()`. Both are edit-time traps — nobody reads this file before
+simplifying a `require` — so they belong where the temptation is.
 
 ## Known limitation: no outline / TOC
 

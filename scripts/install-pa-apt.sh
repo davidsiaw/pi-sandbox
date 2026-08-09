@@ -1,40 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install `pa-apt`: Debian packages without root.
+# Install `pa-apt`: Debian packages without root, plus the profile.d wiring that
+# puts its prefix on PATH.
 #
-# WHY THIS EXISTS
-#   The sandbox's only real need for root was "install a missing CLI tool".
-#   `pa` now runs the container with --security-opt no-new-privileges by
-#   default, which makes sudo fail at the kernel level (setuid is ignored), so
-#   that need has to be met without privileges.
+# This is what makes sudo optional: `pa` runs with --security-opt
+# no-new-privileges by default, so sudo fails at the kernel level and installing
+# a missing CLI tool has to work unprivileged.
 #
-# WHAT IT DOES -- AND WHAT IT DOES NOT
-#   apt is NOT modified or patched. It needs root only because it writes
-#   /var/lib/apt/lists and /var/cache/apt, and because the final unpack writes
-#   into /. So pa-apt:
-#     1. points apt's state at a user-writable dir with documented -o Dir::*
-#        options,
-#     2. uses `install --download-only`, which resolves dependencies against the
-#        REAL /var/lib/dpkg/status -- so the hundreds of libraries already baked
-#        into the image are skipped and only what is genuinely missing is
-#        fetched,
-#     3. replaces the privileged unpack with `dpkg -x` into a user prefix.
+# apt is NOT patched or globally reconfigured -- the wrapper redirects apt's
+# state with documented -o Dir::* options and replaces only the privileged
+# unpack. How and why (including why not an /etc/apt/apt.conf.d snippet):
+# docs/scripts.md.
 #
-#   Consequence: maintainer scripts (postinst etc.) do NOT run. No ldconfig, no
-#   update-alternatives, no users/groups, no /etc config, no services, no CA
-#   certificate hooks. That is fine for CLI tools, which is the whole use case;
-#   anything needing real system integration should be built from source into
-#   $HOME (build-essential is already in the image) or baked into the image.
-#   pa-apt warns when it skips a package's maintainer scripts, so a tool that
-#   misbehaves for that reason is diagnosable instead of mysterious.
-#
-# WHY NOT AN /etc/apt/apt.conf.d SNIPPET INSTEAD OF A WRAPPER
-#   It could redirect the state dirs globally, but it cannot help the step that
-#   actually needs root, and it would leak into the opt-in path: `sudo apt-get
-#   install` under `pa --sudo` would then use the agent's HOME as its cache and
-#   litter it with root-owned files. Keeping the -o flags inside this wrapper
-#   leaves the sudo path behaving exactly like stock apt.
+# The one behavioural difference from a real install: maintainer scripts do NOT
+# run. pa-apt says so when it skips them, so a tool that misbehaves for that
+# reason is diagnosable rather than mysterious.
 
 install -d -m 0755 /usr/local/bin
 

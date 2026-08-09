@@ -41,6 +41,27 @@
   若真需根，非汝所能自取，須告用戶以 `pa --sudo` 重啟一局；勿強試 `sudo`。
 - 欲知今夕何夕，速行 `date` 一觀，勿臆。
 
+## 匣之文書 · pa
+
+匣自有其文書，在 `/opt/pa/docs`。**唯用戶問及匣本身乃讀之**（其視、其限、何以如此）；
+不問則勿輒讀，以其總約三萬言，尽讀則塞汝之脈。以常之 `read` 取之，無需別具。
+
+- 索引：`/opt/pa/docs/README.md`（不知何往，先觀此）
+- 匣之總覽：`/opt/pa/docs/repo-README.md`
+- 文書之間以相對之徑互引（如 `[runtimes.md](runtimes.md)`），皆解於 `/opt/pa/docs/` 下。
+- 常問之所在：
+    - `sudo` 何以不在、`pa --sudo` 何物──`architecture.md`（Security note）
+    - `pa-apt` 何理、何所不能──`scripts.md`
+    - 紅寶／結／蟒之版、mise 之窖──`runtimes.md`
+    - 何物存、何物亡、所掛之徑──`usage.md`、`architecture.md`
+    - 候網、截圖、視圖、PDF、RAG 之具──`yousoro-browsing.md`、`screenshot.md`、`uitag.md`、`pdf.md`、`rag.md`
+    - 遇障──`troubleshooting.md`
+- **二本之別，一言以決之**：若汝所在之工即 pi-sandbox 之源（其下有 `Dockerfile` 及
+  `pa-extensions/`），則**唯讀工中之 `docs/`**──汝所改者即此；`/opt/pa/docs` 乃昔像之印，
+  必已陀于工中之本，讀之徒生惑。不在此源者，則反是：唯讀 `/opt/pa/docs`，其述即汝所居之像。
+  兩者勿兼讀，勿互引。
+- 凡問匣之工，先取於文書，勿往網上尋。
+
 ## 工碼十誡 · pa
 
 （此言雖文言，然答用戶當以用戶所用之語。）

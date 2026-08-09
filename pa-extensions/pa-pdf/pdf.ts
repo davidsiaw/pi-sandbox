@@ -1,42 +1,17 @@
 /**
  * pa-pdf/pdf.ts — extract a PDF to a cached text file with per-page offsets.
  *
- * WHY A CACHE FILE RATHER THAN LAZY PER-PAGE EXTRACTION
- *   Measured in this image on a 500-page / 434KB text PDF via pdf-parse:
+ * Extract ONCE into a cache, then serve page windows and searches from it as
+ * ordinary file reads. Extraction is cheap; TOKENS are the constraint, not time
+ * — a 500-page PDF extracts in ~95ms and yields ~43k tokens. Measurements and
+ * the full rationale live in docs/pdf.md.
  *
- *     metadata only (max:1)   44 ms
- *     window pp.   1-10       11 ms
- *     window pp. 240-250      13 ms
- *     window pp. 480-490      20 ms
- *     FULL extraction         95 ms   -> 171,500 chars (~43k tokens)
+ * The deadline and page cap below are guards against PATHOLOGICAL files (broken
+ * xref, giant scans, font bombs), not the common case.
  *
- *   Extraction is cheap; windowing barely beats it and the cost hardly grows
- *   with page depth. The thing that actually breaks an agent is the 43k tokens,
- *   not the 95ms. So: extract ONCE into a cache, then serve page windows and
- *   searches from that cache as ordinary file reads. Simpler than lazy paging
- *   and it makes pdf_search cheap, which is the tool that makes a 500-page
- *   document usable at all.
- *
- *   The deadline below is therefore a guard against PATHOLOGICAL files
- *   (broken xref, giant scans, font bombs), not the common case.
- *
- * PAGE SEPARATOR
- *   Pages are joined with U+000C (form feed) — the same convention pdftotext
- *   uses — so the cached .txt stays greppable and page boundaries are visible
- *   without a parallel index. Exact offsets still live in the .json sidecar.
- *
- * WHY WE BORROW pdf-parse INSTEAD OF DEPENDING ON IT
- *   pdf-parse (30MB — it ships four copies of pdf.js) is already baked into the
- *   image as a transitive dependency of pi-local-rag under pa-rag. Per the
- *   pa-uitag precedent ("onnxruntime-node is still borrowed on purpose (31MB)")
- *   something this size is borrowed rather than duplicated. The cost is a
- *   coupling to pa-rag's node_modules, so resolution below fails LOUDLY with an
- *   actionable message rather than degrading.
- *
- *   We require `lib/pdf-parse.js` directly, never the package root: pdf-parse's
- *   index.js runs a debug block that reads a test PDF off disk when it thinks it
- *   is not being required as a module. pi-local-rag avoids the root for the same
- *   reason.
+ * pdf-parse is BORROWED from pa-rag's node_modules rather than depended on
+ * (30MB, and already in the image). That coupling is why loadPdfParse() fails
+ * loudly instead of degrading. See docs/pdf.md.
  */
 
 import { spawnSync } from "node:child_process";
@@ -171,7 +146,10 @@ export function loadPdfParse(): PdfParse {
 		);
 	}
 
-	// lib/, never the package root — see the header note about its debug block.
+	// lib/, NEVER the package root: pdf-parse's index.js runs a debug block that
+	// reads a test PDF off disk when it thinks it is not being required as a
+	// module. pi-local-rag avoids the root for the same reason. Do not "simplify"
+	// this to require("pdf-parse").
 	const entry = join(pkgDir, "lib", "pdf-parse.js");
 	if (!existsSync(entry)) {
 		throw new Error(`pa-pdf: found pdf-parse at ${pkgDir} but ${entry} is missing.`);
