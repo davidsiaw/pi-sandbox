@@ -1,5 +1,10 @@
 name: build-and-push
 
+# NOTE: there is deliberately no `pull_request` trigger, so this workflow does
+# not run on PRs at all. That alone is not the guarantee, though -- adding one
+# (e.g. to smoke-test a PR) would immediately let PR builds write to Docker Hub.
+# The real enforcement is the `if:` on the push step below, which is what keeps
+# that door shut whatever triggers get added later.
 on:
   push:
     branches: [master]
@@ -121,7 +126,15 @@ jobs:
       - name: Smoke test
         run: bash smoketest.sh
 
+      # Never publish from a pull request. This step is the ONLY thing in the
+      # workflow that writes to Docker Hub, and it writes twice: the image tags
+      # (`push: true`) and the registry layer cache (`cache-to`). Both are
+      # covered by this one condition.
+      #
+      # Guarding the STEP rather than the job is deliberate: a PR should still
+      # be built and smoke-tested by the steps above, it just must not publish.
       - name: Build and push (both arches)
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v7
         with:
           context: .

@@ -125,7 +125,20 @@ chmod 0755 /usr/local/bin/pa-apt
 # making the agent eval something matters: a tool it has to remember to
 # activate is a tool it will forget to activate. Harmless when the prefix does
 # not exist.
-cat > /etc/profile.d/pa-apt.sh <<'EOF'
+#
+# NAMED 00- ON PURPOSE. /etc/profile.d/*.sh is sourced in glob (alphabetical)
+# order, and both this file and mise.sh PREPEND to PATH -- so whichever runs
+# LAST ends up in front. As plain `pa-apt.sh` it sorted after `mise.sh` and
+# pushed the mise shims down to third, which meant a `pa-apt install nodejs`
+# would silently shadow a project's mise-pinned node. Sorting first lets mise.sh
+# run last, giving the precedence we actually want:
+#
+#     mise shims  >  pa-apt prefix  >  /usr/bin
+#
+# i.e. project-pinned runtimes beat explicitly installed tools, which beat the
+# system. The smoke test asserts that ordering.
+rm -f /etc/profile.d/pa-apt.sh
+cat > /etc/profile.d/00-pa-apt.sh <<'EOF'
 _pa_apt_prefix="${PA_APT_PREFIX:-$HOME/.local/pa-apt}"
 case "$(uname -m)" in
   x86_64)  _pa_apt_triplet=x86_64-linux-gnu ;;
@@ -136,7 +149,7 @@ export PATH="$_pa_apt_prefix/usr/bin:$_pa_apt_prefix/usr/sbin:$PATH"
 export LD_LIBRARY_PATH="$_pa_apt_prefix/usr/lib/$_pa_apt_triplet:$_pa_apt_prefix/usr/lib:${LD_LIBRARY_PATH:-}"
 unset _pa_apt_prefix _pa_apt_triplet
 EOF
-chmod 0644 /etc/profile.d/pa-apt.sh
+chmod 0644 /etc/profile.d/00-pa-apt.sh
 
 bash -n /usr/local/bin/pa-apt
 echo "pa-apt installed"

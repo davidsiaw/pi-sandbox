@@ -152,9 +152,24 @@ echo "$out" | grep -q '/etc/mise/config.toml' \
 # `mise use -g node@20` ends up reporting the system v22. Assert it is FIRST.
 run 'echo "$PATH"' | grep -q '/.local/share/mise/shims' \
   && pass "mise shims on PATH in a login shell" || fail "mise shims missing from login-shell PATH"
-run 'echo "$PATH" | cut -d: -f1' | grep -q '/.local/share/mise/shims$' \
-  && pass "mise shims are FIRST on PATH (beat /usr/bin)" \
-  || fail "mise shims not first on PATH: system runtimes will win"
+# Assert the ORDERING, not a positional index. The original form checked that
+# the shims were literally PATH entry #1, which broke the moment pa-apt added
+# its own /etc/profile.d entry -- a false failure, since the property that
+# matters was never "index 0" but "ahead of the things it must beat".
+#
+# Required precedence:  mise shims  >  pa-apt prefix  >  /usr/bin
+# i.e. a project's pinned runtime beats an explicitly installed tool, which
+# beats the system. Both profile.d snippets PREPEND, so this is really a test of
+# their sourcing order (00-pa-apt.sh before mise.sh).
+out="$(run 'p=$(echo "$PATH" | tr ":" "\n")
+  s=$(echo "$p" | grep -n "mise/shims"     | head -1 | cut -d: -f1)
+  a=$(echo "$p" | grep -n "pa-apt/usr/bin" | head -1 | cut -d: -f1)
+  u=$(echo "$p" | grep -nx "/usr/bin"      | head -1 | cut -d: -f1)
+  echo "shims=$s pa-apt=$a usr=$u"
+  [ -n "$s" ] && [ -n "$a" ] && [ -n "$u" ] && [ "$s" -lt "$a" ] && [ "$a" -lt "$u" ] && echo ORDER_OK')"
+echo "$out" | grep -q ORDER_OK \
+  && pass "PATH precedence: mise shims > pa-apt > /usr/bin" \
+  || fail "PATH precedence wrong ($(echo "$out" | grep -o 'shims=.*'))"
 
 # A pinned default must NOT override a project's own .ruby-version. Current mise
 # ignores idiomatic version files unless opted in, which would make a repo
