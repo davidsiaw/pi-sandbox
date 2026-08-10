@@ -148,6 +148,39 @@ docker volume rm pi-sandbox-mise
 
 The next `pa` run recreates the volume and reinstalls versions on demand.
 
+## Nothing resolves in the container / a tailnet hostname is unknown
+
+First check whether DNS is broken at all:
+
+```bash
+getent hosts example.com     # plain DNS
+getent hosts my-mac.tail12345.ts.net   # a tailnet peer
+```
+
+If **plain DNS** fails, it is the host's docker daemon DNS, not `pa` — `pa`
+passes no `--dns` and the entrypoint does not touch `/etc/resolv.conf`. Check
+`docker run --rm alpine nslookup example.com` and your daemon's `dns` setting.
+
+If **only the tailnet name** fails, the launcher's MagicDNS snapshot missed it.
+`pa` reads `tailscale status` on the host at launch and injects each peer with
+`--add-host` (see [usage.md](usage.md#networking-dns-and-tailnet-hostnames)), so:
+
+- the peer must be visible in `tailscale status` **on the host** when `pa`
+  starts — a peer that appeared later needs a `pa` restart;
+- use the **full** MagicDNS name (`host.tail12345.ts.net`); short names are not
+  injected;
+- `tailscale status --json` must report `MagicDNSSuffix` (MagicDNS enabled).
+
+If **`<env>.<suffix>` (the heighliner app) fails** but everything else resolves,
+the `heighliner-dns` container was down when `pa` started, so its resolver was
+deliberately not wired up. Start it and restart `pa`. `pa` warns on the host
+terminal if that container is running but has no IPv4 on the spice network.
+
+Older versions passed `--dns 100.100.100.100` and papered over the fallout with
+a `sudo` rewrite of `/etc/resolv.conf` in the entrypoint. If you are carrying a
+local `~/crun.d/pa` from back then, that flag alone will break **all** DNS in the
+container — remove it.
+
 ## Agent can't reach a model / auth errors
 
 By default `pa` mounts `~/.pi/agent/auth.json` read-only. If you ran with

@@ -19,28 +19,14 @@ fi
 
 export HOME=/home/agent
 
-# Configure fallback DNS servers early (using sudo to modify /etc/resolv.conf)
-# Check if DNS resolution works; if not, add public DNS servers while preserving search domains
-if ! getent hosts google.com >/dev/null 2>&1; then
-  echo "DNS resolution failed. Adding fallback DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9)..." >&2
-  # Extract existing search/domains if present
-  SEARCH_LINE=$(grep '^search\|^domain' /etc/resolv.conf 2>/dev/null || true)
-  OPTIONS_LINE=$(grep '^options' /etc/resolv.conf 2>/dev/null || true)
-  
-  if sudo tee /etc/resolv.conf > /dev/null <<EOF
-${SEARCH_LINE:+$SEARCH_LINE}
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-nameserver 9.9.9.9
-${OPTIONS_LINE:+$OPTIONS_LINE}
-options timeout:2 attempts:3
-EOF
-  then
-    echo "Fallback DNS servers added." >&2
-  else
-    echo "WARNING: Could not write /etc/resolv.conf. Try running with --dns 8.8.8.8 --dns 1.1.1.1" >&2
-  fi
-fi
+# NOTE: there is deliberately no DNS repair here. An earlier version probed
+# resolution and rewrote /etc/resolv.conf via sudo when it failed. That existed
+# only because the launcher passed `--dns 100.100.100.100` on Tailscale hosts,
+# which replaced the container's working resolvers with a tailnet-local address
+# the container often could not reach. The launcher now injects tailnet names as
+# --add-host entries instead, so the container keeps docker's default DNS and
+# there is nothing to fix up. It also could not work: sudo is dead under
+# --security-opt no-new-privileges, which is how pa always launches.
 
 if [ -x /usr/local/bin/merge-append-system.sh ]; then
   /usr/local/bin/merge-append-system.sh || true

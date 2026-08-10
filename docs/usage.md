@@ -80,6 +80,63 @@ Env-based secrets (any tool that reads an env var) are *forwarded* rather than
 mounted — see [Forwarding secrets / env vars](#forwarding-secrets--env-vars)
 below.
 
+## Networking: DNS and tailnet hostnames
+
+The container uses **docker's default DNS**. `pa` never passes `--dns`, and
+nothing rewrites `/etc/resolv.conf` at startup.
+
+If Tailscale is running on the host, `pa` snapshots MagicDNS **on the host** and
+passes each peer to docker as a static hosts entry:
+
+```
+--add-host my-mac.tail12345.ts.net:100.101.102.103
+```
+
+So `curl http://my-mac.tail12345.ts.net:11434` works in the container (handy for
+a model served on the host's `127.0.0.1`), while normal DNS is untouched.
+
+Two consequences worth knowing:
+
+- The snapshot is taken **at launch**. A peer that joins the tailnet mid-session
+  won't be known; restart `pa`.
+- Only **fully-qualified** MagicDNS names are injected, not bare short names —
+  there is no tailnet search domain in the container.
+
+### Heighliner's resolver (spice only)
+
+When a spice server is up, `pa` joins heighliner's docker network, and heighliner
+runs its own dnsmasq so `<env>.<suffix>` resolves to its nginx proxy. That one
+**does** need `--dns`: the suffix is server config and the env name only exists
+after `heighliner init`, so no static hosts entry could cover it.
+
+It is wired up only when the `heighliner-dns` container is **running** *and*
+reports a valid IPv4 on that network — `docker inspect` answers `<no value>`
+when the network key is missing, and `docker run --dns "<no value>"` fails with
+*invalid argument* before the agent starts. A public resolver is passed as a
+**second** forwarder (`PA_FALLBACK_DNS`, default `1.1.1.1`) so that a dnsmasq
+that dies mid-session degrades instead of taking all name resolution with it.
+Reaching `heighliner-spice` by container name keeps working regardless: docker's
+embedded resolver answers container names itself.
+
+<details>
+<summary>Why not <code>--dns 100.100.100.100</code>?</summary>
+
+That is what `pa` used to do, and it broke DNS entirely on Tailscale hosts.
+`--dns` **replaces** the container's resolvers rather than adding to them, and
+`100.100.100.100` is a tailnet-local address served by `tailscaled` — whether a
+container network namespace can reach it depends on the host (on Docker Desktop
+the Linux VM has no tailscale route at all). The result was a container whose
+*only* nameserver was unreachable: nothing resolved.
+
+The entrypoint then grew a `sudo`-powered `/etc/resolv.conf` rewrite to undo it,
+which stopped working the day `pa` started launching with
+`--security-opt no-new-privileges` (see
+[architecture.md](architecture.md#security-note-sudo-is-opt-in)). Both layers are
+gone: MagicDNS is only a name → `100.x` mapping, so it is resolved on the host,
+where tailscale definitely works, and passed in as data.
+
+</details>
+
 ## Environment toggles
 
 Set these when invoking `pa`:
@@ -91,6 +148,7 @@ Set these when invoking `pa`:
 | `MISE_VOLUME`   | `pi-sandbox-mise`                | name of the runtime cache volume |
 | `NO_MOUNT_SYSTEM` | `0`                            | `1` = do **not** mount a host `SYSTEM.md` (which would replace pi's default system prompt) |
 | `PI_TOOL_EXECUTION` | `sequential`                 | tool-call strategy. `sequential` runs one tool at a time; `parallel` restores upstream concurrent fan-out. Any other value falls back to `parallel`. |
+| `PA_FALLBACK_DNS` | `1.1.1.1`                      | second DNS forwarder, used **only** when heighliner's resolver is wired up (see [Networking](#networking-dns-and-tailnet-hostnames)) |
 
 Examples:
 
