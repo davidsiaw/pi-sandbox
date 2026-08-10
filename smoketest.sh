@@ -441,6 +441,22 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-checker guard: the verification pass. The safety property comes first --
+# the audit runs unattended against the user's real project directory, so the
+# checker subprocess must be unable to write, edit or run a command no matter
+# how it was invoked. The rest is about not making things worse than no checker
+# at all: a model with no "checker" key must never spawn anything, the revision
+# loop must terminate in a shipped answer rather than billing forever, and every
+# failure (dead model, garbage verdict, timeout) must fail OPEN. Drives the real
+# spawn path against a fake `pi` on PATH. Auth-free: no model, no network.
+out="$(run 'cd /opt/pa/extensions/pa-checker && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-checker selftest (read-only checker + bounded loop + fail-open)"
+else
+  fail "pa-checker selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 # pa-pdf guard: the map -> search -> read loop. pdf_map must report a PDF's
 # shape without returning body text (a 300-page document is ~29k tokens -- the
 # failure mode is drowning the model, not hanging it); pdf_search must map match

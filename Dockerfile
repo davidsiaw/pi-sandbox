@@ -128,6 +128,7 @@ RUN git clone --depth 1 https://github.com/AmazingAng/auth2api /opt/auth2api && 
 # node_modules installed here: COPY merges into the destination, and
 # .dockerignore keeps any local node_modules out of the build context.
 # ---------------------------------------------------------------------------
+COPY pa-extensions/pa-checker/package.json         /opt/pa/extensions/pa-checker/
 COPY pa-extensions/pa-cloakbrowser/package.json    /opt/pa/extensions/pa-cloakbrowser/
 COPY pa-extensions/pa-console/package.json         /opt/pa/extensions/pa-console/
 COPY pa-extensions/pa-inspect-image/package.json   /opt/pa/extensions/pa-inspect-image/

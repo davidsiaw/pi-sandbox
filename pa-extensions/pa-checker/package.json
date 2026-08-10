@@ -1,0 +1,13 @@
+{
+  "name": "pa-checker",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Baked pa extension: opt-in verification pass. When a model with a \"checker\" key in models.json settles, a separate read-only pi process running a second model audits the answer against the system prompt, the request and the tool log, and feeds back specific criticism for self-correction.",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "typebox": "^1.3.0"
+  }
+}
