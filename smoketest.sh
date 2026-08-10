@@ -397,6 +397,35 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-console guard: the REPL rests on live-page properties that break silently
+# and cannot be caught by reading code -- injected output being distinguishable
+# from the page's own, window state surviving between evals while a top-level
+# const does not, and above all a DELAYED error still being captured after the
+# call that triggered it returned. That last one failing would make the tool
+# report "no errors" for a page that is still broken.
+out="$(run 'cd /opt/pa/extensions/pa-console && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-console selftest (REPL state + late-error capture + formatting)"
+else
+  fail "pa-console selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
+# The pa-console tools deliberately carry only a pointer in their descriptions;
+# the usage guidance lives in the skill, which is loaded on demand. If the skill
+# stops being baked, the tools keep working but every hint about how to use them
+# is gone -- a silent quality loss with no error anywhere.
+run 'test -s /opt/pa/skills/pa-console/SKILL.md && echo CONSOLE_SKILL_OK' | grep -q CONSOLE_SKILL_OK \
+  && pass "pa-console skill baked (tools point at it for usage)" \
+  || fail "pa-console skill missing; page_console has no usage guidance"
+# Count INSIDE the container and emit a token, rather than comparing $out as an
+# integer out here: run() folds stderr into stdout, so the entrypoint's "Adding
+# agent user to /etc/passwd..." arrives ahead of the number and `[ -ge ]` dies
+# with "integer expression expected".
+run 'n=$(grep -c page_console /opt/pa/skills/pa-console/SKILL.md 2>/dev/null || echo 0); [ "$n" -ge 5 ] && echo CONSOLE_SKILL_DOCS_OK' | grep -q CONSOLE_SKILL_DOCS_OK \
+  && pass "pa-console skill documents the tools" \
+  || fail "pa-console skill does not mention page_console enough to be useful"
+
 # pa-anthropic-oauth guard: /resume used to kill pi with "This extension ctx is
 # stale after session replacement or reload" — the usage poller's 60s interval
 # was started from session_start with no session_shutdown handler, so it

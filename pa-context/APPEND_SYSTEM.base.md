@@ -28,6 +28,7 @@
   其書 PNG 於檔而返其徑，不返其像；欲觀則繼以 `inspect_image image="<其徑>"`。
   徑宜用相對者（落於工中，越匣而存）；`/tmp` 者匣去即滅。既有其檔則拒不覆，別指一徑。
   凡 JS 所渲之 UI，以 `wait_for_selector` 候其真容現，勿猜時而截得轉子。
+  唯**互動之後**之貌，`screenshot_url` 不能（其必重載，只得初態），須用 `page_screenshot`。
 - **求 UI 諸元之位**：既有截圖，欲知諸元何在（以裁其片而逐一察之）——用 `detect_ui_elements`。
   其返每元之 `x, y, width, height`（原圖像素，整數，可徑用於裁）。類粗而**不取其文**；
   欲知某片何言，裁至其框，乃以 `inspect_image` 察之。其流：截→求位→裁→察。
@@ -39,6 +40,10 @@
   `$HOME`（`build-essential` 早備）。pa-apt 遇此必告，勿疑。
   裝者亦朝生暮死，與昔之 `apt` 同。
   若真需根，非汝所能自取，須告用戶以 `pa --sudo` 重啟一局；勿強試 `sudo`。
+- **除蠹頁之則**：欲驗汝所書之頁、覓其 console 之誤、或反「擊此則彼」之報——用 `page_console`：
+  開一活頁，反覆送 JS 而讀其 console（汝之 log 與頁之誤、5xx 同流而序）。**勿另書臨時 Playwright 之本。**
+  頁於呼之間常開，故遲發之誤（setTimeout、async）落於後呼——無參一呼即取，未取勿言其已治。
+  事畢以 `page_close` 釋之（閒置約 350MB）。（其詳見 pa-console 技。）
 - 欲知今夕何夕，速行 `date` 一觀，勿臆。
 
 ## 匣之文書 · pa
