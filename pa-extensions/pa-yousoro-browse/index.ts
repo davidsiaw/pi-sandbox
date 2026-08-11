@@ -32,7 +32,16 @@
 import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type CacheInfo, truncateHead, writeCache } from "./cache.ts";
+import {
+	type CacheInfo,
+	formatCacheFailure,
+	formatCacheFooter,
+	truncateHead,
+	writeCache,
+} from "../_shared/cache.ts";
+import { cloakAvailable, cloakDumpDom, titleOf } from "../_shared/cloak.ts";
+import { htmlToMarkdown, htmlToText } from "../_shared/html-to-markdown.ts";
+import { domToMarkdown } from "./markdown.ts";
 import {
 	type Chromium,
 	type VirtualDisplay,
@@ -71,6 +80,7 @@ interface FetchOptions {
 	challengeWaitMs: number;
 	headed: boolean;
 	humanize: boolean;
+	format: "text" | "markdown" | "html";
 }
 
 interface FetchResult {
@@ -80,7 +90,13 @@ interface FetchResult {
 	attempts: number;
 	blocked: boolean;
 	text: string;
+	/** The serialised DOM, always captured so the raw markup can be cached. */
+	html: string;
 	extracted?: ExtractedItem[];
+	/** Which fetcher produced the content that is being returned. */
+	engine: "yousoro" | "cloakbrowser";
+	/** Set when escalation was attempted but could not be used. */
+	escalationNote?: string;
 }
 
 async function yousoroFetch(
@@ -186,7 +202,15 @@ async function yousoroFetch(
 
 		const title = await page.title();
 		const finalUrl = page.url();
-		const text: string = await page.evaluate(() => document.body?.innerText ?? "");
+		// innerText is flat: it loses headings, list nesting and every link URL.
+		// markdown keeps them, at the cost of running a DOM walk in the page.
+		const html: string = await page.content();
+		const text: string =
+			opts.format === "html"
+				? html
+				: opts.format === "markdown"
+					? await page.evaluate(domToMarkdown)
+					: await page.evaluate(() => document.body?.innerText ?? "");
 
 		let extracted: ExtractedItem[] | undefined;
 		if (opts.extract) {
@@ -213,7 +237,19 @@ async function yousoroFetch(
 			);
 		}
 
-		return { status, title, finalUrl, attempts: attempt, blocked, text, extracted };
+		return {
+			status,
+			title,
+			finalUrl,
+			// The loop counter runs one past the last attempt when every attempt was
+			// blocked, which reported "Attempts: 5" for a maxAttempts=4 fetch.
+			attempts: Math.min(attempt, opts.maxAttempts),
+			blocked,
+			text,
+			html,
+			extracted,
+			engine: "yousoro",
+		};
 	} finally {
 		await browser.close();
 		vdisplay?.dispose();
@@ -285,6 +321,29 @@ const PARAMS = Type.Object({
 				"Adds ~1s. Default true; set false for the fastest possible fetch.",
 		}),
 	),
+	format: Type.Optional(
+		// Type.Enum(map, options) is the shape this typebox build supports — there is
+		// no Type.StringEnum. Same call as pa-cloakbrowser's `format`.
+		Type.Enum({ markdown: "markdown", text: "text", html: "html" }, {
+			default: "markdown",
+			description:
+				'How to render the page. "markdown" (default) keeps headings, lists, ' +
+				"tables, code blocks and \u2014 the useful part \u2014 link URLs inline as " +
+				"[text](url), so one fetch gives both the prose and where to go next; " +
+				'hidden elements (menus, cookie banners) are skipped. "text" is flat ' +
+				'innerText. "html" is the raw DOM \u2014 rarely needed inline, since the raw ' +
+				"DOM is ALWAYS written to a sibling .html cache file whose path is reported.",
+		}),
+	),
+	escalate: Type.Optional(
+		Type.Boolean({
+			description:
+				"When the fetch ends up blocked, automatically retry it with CloakBrowser " +
+				"(stealth Chromium, C++ patches) before giving up, and return that content " +
+				"instead. Default true. Costs nothing on a normal fetch \u2014 it only runs " +
+				"after a block. Set false to see the raw block instead.",
+		}),
+	),
 	max_chars: Type.Optional(
 		Type.Number({
 			description:
@@ -314,19 +373,28 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			"\"Just a moment\" 403-then-redirect challenges, and retry-with-backoff on " +
 			"bot/rate-limit blocks. Use this to read pages that reject plain headless " +
 			"browsers with 403/429/503 (e.g. Reddit, Cloudflare-fronted sites). Returns " +
-			"page text, and optionally innerText (and an attribute such as href) of " +
+			"readable Markdown by default (headings, lists, tables, and link URLs inline " +
+			'as [text](url)); format="text" gives flat innerText. Optionally also returns ' +
+			"innerText (and an attribute such as href) of " +
 			"elements matching a CSS selector — use extract=\"a\" extract_attr=\"href\" " +
-			"to collect links with their text. The COMPLETE result is always cached to a " +
-			"file under /tmp and its path reported, so anything truncated from the inline " +
-			"preview can be recovered with read or rg instead of re-fetching.",
+			"to collect links with their text. EVERY fetch writes two files under /tmp and " +
+			"reports both paths: the complete rendered body (.txt) and the raw DOM " +
+			"(.html), so anything truncated — or anything the rendering may have dropped — " +
+			"is recovered with read or rg instead of re-fetching. If the page comes back " +
+			"blocked, this tool automatically retries it with CloakBrowser and returns " +
+			"that content, reporting which engine won.",
 		promptSnippet: "Fetch a web page past bot-blocks using the yousoro headless browser",
 		promptGuidelines: [
 			"CRITICAL: Before using yousoro_browse for search/browsing tasks, load the 'web-search' skill which contains essential guidance on search engines, BFS strategies, and blocked-site handling.",
 			"Use yousoro_browse to read a web page when a normal fetch is blocked (403/429/503) or when the site is known to reject headless browsers (Reddit, Cloudflare).",
 			"Prefer yousoro_browse over ad-hoc Playwright scripts for one-off page reads.",
+			"A blocked page is not a dead end: yousoro_browse escalates to CloakBrowser by itself, and the result says which engine produced the content. If a result still reports BLOCKED after that, both engines failed — switch sources instead of retrying.",
+			"If you ever fetch a page WITHOUT yousoro_browse (or with escalate=false) and it is blocked with 403/429/503 or a CAPTCHA, immediately try cloak_browse on the same URL rather than reporting failure to the user.",
 			"Set yousoro_browse scroll>0 for infinite-scroll feeds (e.g. Reddit) so lazy-loaded items are captured.",
 			'Use yousoro_browse with extract="a" extract_attr="href" to collect candidate links (text + absolute URL) from a page before deciding which to follow.',
-			"yousoro_browse always caches the full page text and full extract list to a /tmp file and reports the path. The inline output is only a preview: when it reports truncation, read or rg that file rather than re-fetching with a bigger max_chars.",
+			'yousoro_browse returns Markdown by default, so link URLs are already inline as [text](url) — do not follow a fetch with a second extract="a" extract_attr="href" fetch just to learn where the links go. Use format="text" only when you want prose with no markup.',
+			"yousoro_browse always caches the full rendered body plus the full extract list to /tmp (<stem>.txt), and the raw DOM alongside it (<stem>.html). The inline output is only a preview: when it reports truncation, read or rg those files rather than re-fetching with a bigger max_chars.",
+			"If the rendered output looks like it swallowed something (a table, a form, a value you expected), read the .html file it reported instead of re-fetching with format=\"html\".",
 			"Page-text truncation is head-first, so the BOTTOM of a long page is what the preview omits. The report gives total line counts \u2014 use read with offset to jump to the tail of the cache file.",
 		],
 		parameters: PARAMS,
@@ -361,6 +429,9 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 
 			const maxChars = params.max_chars ?? 8000;
 			const maxItems = params.max_items ?? 50;
+			const escalate = params.escalate !== false;
+			const format =
+				params.format === "text" || params.format === "html" ? params.format : "markdown";
 			const onProgress = (msg: string) =>
 				onUpdate?.({ content: [{ type: "text", text: msg }] });
 
@@ -380,6 +451,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 						challengeWaitMs: params.challenge_wait_ms ?? 20000,
 						headed: params.headed ?? false,
 						humanize: params.humanize ?? true,
+						format,
 					},
 					signal,
 					onProgress,
@@ -396,26 +468,105 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 				};
 			}
 
+			// ESCALATION. A blocked fetch used to end here with `Blocked: true` and no
+			// suggestion, and agents were observed reporting failure to the user
+			// instead of reaching for CloakBrowser — the tool that exists for exactly
+			// this and defeats what Playwright-with-patches cannot (reCAPTCHA v3,
+			// behaviour scoring). So retry here rather than hoping the model does.
+			// Only on a real block, so a normal fetch never pays for it.
+			if (result.blocked && escalate) {
+				if (!cloakAvailable()) {
+					result.escalationNote =
+						"CloakBrowser is not installed in this image, so there is nothing to " +
+						"escalate to.";
+				} else {
+					onProgress("Blocked — escalating to CloakBrowser (stealth Chromium)...");
+					try {
+						const html = await cloakDumpDom({
+							url: result.finalUrl,
+							humanize: params.humanize ?? true,
+							timeoutMs: 45000,
+						});
+						// No live page here, so render from the string and re-run the same
+						// visible-text detection to see whether cloak got further.
+						const readable = htmlToText(html);
+						const stillBlocked =
+							looksChallenge(titleOf(html), readable) || looksBlocked(null, readable);
+						if (stillBlocked) {
+							result.escalationNote =
+								"CloakBrowser was tried automatically and was ALSO blocked, so this " +
+								"site cannot be read from this sandbox. Find another source rather " +
+								"than retrying either tool.";
+						} else {
+							result.text =
+								format === "html"
+									? html
+									: format === "text"
+										? readable
+										: htmlToMarkdown(html, result.finalUrl);
+							result.html = html;
+							result.title = titleOf(html) || result.title;
+							result.blocked = false;
+							result.engine = "cloakbrowser";
+							// The extract list came from the blocked page, so it describes a
+							// challenge screen, not the content now being returned.
+							if (result.extracted) {
+								result.extracted = undefined;
+								result.escalationNote =
+									'`extract` was dropped: it had matched the blocked page. Re-run ' +
+									"with the same selector to extract from the CloakBrowser content.";
+							}
+						}
+					} catch (err) {
+						result.escalationNote = `CloakBrowser escalation failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`;
+					}
+				}
+			}
+
+			// CloakBrowser dumps a DOM and reports no HTTP status, so after a
+			// successful escalation the status belongs to the BLOCKED attempt, not to
+			// the content being returned. Saying `Status: 403 Blocked: false` reads as
+			// a contradiction, so attribute it.
+			const statusLine =
+				result.engine === "cloakbrowser"
+					? `Status: n/a (CloakBrowser reports none; yousoro saw ${result.status ?? "unknown"})`
+					: `Status: ${result.status ?? "unknown"}`;
 			const header =
 				`URL: ${result.finalUrl}\n` +
-				`Status: ${result.status ?? "unknown"}  Attempts: ${result.attempts}  ` +
-				`Blocked: ${result.blocked}\n` +
-				`Title: ${result.title}\n`;
+				`${statusLine}  Attempts: ${result.attempts}  Blocked: ${result.blocked}\n` +
+				`Title: ${result.title}\n` +
+				`Format: ${format}  Engine: ${
+					result.engine === "cloakbrowser"
+						? "cloakbrowser (yousoro was blocked; escalated automatically)"
+						: "yousoro"
+				}\n`;
 
 			// Cache the COMPLETE result before building the preview, so nothing the
 			// preview drops is lost. A cache failure must not fail the fetch: the
 			// inline preview is still useful, so degrade and say so.
 			let cache: CacheInfo | undefined;
-			let cacheError: string | undefined;
+			let cacheError: unknown;
 			try {
 				cache = writeCache(tmpdir(), result.finalUrl, {
 					extract: params.extract,
 					extractAttr: params.extract_attr,
 					extracted: result.extracted,
 					text: result.text,
+					textLabel:
+						format === "markdown"
+							? "PAGE MARKDOWN"
+							: format === "html"
+								? "PAGE HTML"
+								: "PAGE TEXT",
+					// Always keep the raw DOM, whatever was rendered inline. It is the
+					// answer to "is the renderer hiding something from me?". Skipped when
+					// the body IS the raw DOM, which would just duplicate the file.
+					rawHtml: format === "html" ? undefined : result.html,
 				});
 			} catch (err) {
-				cacheError = err instanceof Error ? err.message : String(err);
+				cacheError = err;
 			}
 
 			const parts: string[] = [header];
@@ -438,20 +589,18 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			}
 
 			const page = truncateHead(result.text, maxChars);
+			const pageLabel =
+				format === "markdown" ? "Page markdown" : format === "html" ? "Page HTML" : "Page text";
 			const pageHeading = page.truncated
-				? `\n--- Page text (showing ${page.shownChars} of ${page.totalChars} chars; ` +
+				? `\n--- ${pageLabel} (showing ${page.shownChars} of ${page.totalChars} chars; ` +
 					`lines 1-${page.shownLines} of ${page.totalLines}) ---`
-				: "\n--- Page text ---";
+				: `\n--- ${pageLabel} ---`;
 			parts.push(`${pageHeading}\n${page.content}`);
 
 			// The footer is the whole point: it tells the model what it did NOT see
-			// and hands it ready-to-run commands to get the rest.
+			// and hands it ready-to-run commands to get the rest. Rendered by the
+			// shared module so cloak_browse says exactly the same thing.
 			if (cache) {
-				const kb = Math.max(1, Math.round(cache.bytes / 1024));
-				const foot: string[] = [
-					"\n--- Full content cached ---",
-					`${cache.path}  (${kb} KB, ${cache.totalLines} lines)`,
-				];
 				const sections: string[] = [];
 				if (cache.extractedRange) {
 					sections.push(
@@ -459,21 +608,33 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 					);
 				}
 				if (cache.pageTextRange) {
-					sections.push(`page text lines ${cache.pageTextRange[0]}-${cache.pageTextRange[1]}`);
+					sections.push(`page body lines ${cache.pageTextRange[0]}-${cache.pageTextRange[1]}`);
 				}
-				if (sections.length > 0) foot.push(`  Sections: ${sections.join(", ")}`);
-				if (page.truncated || (result.extracted?.length ?? 0) > maxItems) {
-					foot.push(
-						`  Truncation is head-first, so the TAIL is only in the file.`,
-						`  Tail:   read path="${cache.path}" offset=${Math.max(1, cache.totalLines - 100)}`,
-						`  Search: rg -n "pattern" "${cache.path}"`,
-					);
-				}
-				parts.push(foot.join("\n"));
-			} else {
 				parts.push(
-					`\n--- Full content NOT cached ---\nCould not write the cache file: ${cacheError}.\n` +
-						`Anything truncated above is unavailable without re-fetching.`,
+					formatCacheFooter(cache, {
+						truncated: page.truncated || (result.extracted?.length ?? 0) > maxItems,
+						sections,
+					}),
+				);
+			} else {
+				parts.push(formatCacheFailure(cacheError));
+			}
+
+			if (result.escalationNote) {
+				parts.push(`\n--- Escalation ---\n${result.escalationNote}`);
+			}
+
+			// What to do next, at the moment the model is deciding it. Guidance in a
+			// system prompt is too far away from this point to be acted on.
+			if (result.blocked) {
+				parts.push(
+					escalate
+						? "\n--- BLOCKED ---\nBoth yousoro_browse and CloakBrowser failed on this " +
+							"URL. Do not retry either one: find another source for the same " +
+							"information, or tell the user this site cannot be read from here."
+						: "\n--- BLOCKED ---\nNext step: retry this URL with the cloak_browse tool " +
+							"(stealth Chromium with C++ patches; defeats reCAPTCHA v3 and " +
+							`behavioural detection that this tool cannot). cloak_browse url="${result.finalUrl}"`,
 				);
 			}
 
@@ -485,8 +646,11 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 					finalUrl: result.finalUrl,
 					attempts: result.attempts,
 					blocked: result.blocked,
+					format,
+					engine: result.engine,
 					extractedCount: result.extracted?.length,
 					cachePath: cache?.path,
+					rawPath: cache?.rawPath,
 					cacheLines: cache?.totalLines,
 					textTruncated: page.truncated,
 					totalChars: page.totalChars,

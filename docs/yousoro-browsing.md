@@ -10,6 +10,8 @@ transient blocks — so the agent can read pages that reject plain headless
 browsers (403/429/503) from the sandbox's egress IP.
 
 - Extension source: `pa-extensions/pa-yousoro-browse/index.ts`
+- Output caching lives in `pa-extensions/_shared/cache.ts`, shared with
+  `cloak_browse` (see [cloakbrowser.md](cloakbrowser.md#output-caching)).
 - Baked at `/opt/pa/extensions/pa-yousoro-browse`, loaded additively by `pa`
   (see [usage.md](usage.md#baked-skills--extensions)).
 - Playwright is **not** bundled with the extension; it resolves the global
@@ -147,16 +149,114 @@ fastest possible fetch.
 | `scroll` | 0 | scroll-to-bottom passes (infinite-scroll feeds) |
 | `scroll_wait_ms` | 1500 | wait after each scroll pass |
 | `challenge_wait_ms` | 20000 | max wait for a Cloudflare interstitial to auto-solve and redirect |
+| `format` | `markdown` | `markdown` = structure + inline link URLs (see below); `text` = flat innerText; `html` = raw DOM |
 | `headed` | false | run headed Chromium behind a virtual X display (see below) |
 | `max_chars` | 8000 | inline budget for page text (the full text is always cached) |
 | `max_items` | 50 | inline budget for the `extract` list (the full list is always cached) |
 
-## Output caching
+## `format="markdown"` (the default)
 
-Every fetch writes its **complete** result to `/tmp/pa-browse-<host>-<ts>.txt`
-and reports the path. The inline result is only a preview.
+`format="text"` is `document.body.innerText`. It is flat: headings, list nesting
+and **every link URL** are gone. That last one costs a round trip — the agent can
+see that a link exists but not where it points, so it re-fetches with
+`extract="a" extract_attr="href"` and then re-aligns two lists by hand. That is
+why it is no longer the default.
 
-This fixes two separate ways output used to be lost:
+`format="markdown"` walks the DOM instead and emits headings, lists (nested,
+`<ol start>` honoured), tables, `<pre>` fences, blockquotes, `**bold**`, code
+spans, and links as `[text](url)` with hrefs already resolved to absolute URLs.
+
+```
+innerText:   Ruby is a general-purpose programming language ... Yukihiro Matsumoto
+markdown:    [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) is a
+             [general-purpose programming language](https://en.wikipedia.org/wiki/...)
+```
+
+The conversion runs **inside the page** (`page.evaluate`), not over a serialised
+HTML string in Node. That is what makes `Element.checkVisibility()` available, so
+`display:none` menus, collapsed accordions and hidden cookie banners are dropped
+— a Node-side HTML converter cannot tell a rendered nav from a hidden one. It
+also means no `turndown` dependency, and it operates on the DOM we already have:
+post-JS, post-`scroll`, post-challenge. Source: `pa-yousoro-browse/markdown.ts`.
+
+Two deliberate reductions, both measured on the Wikipedia article for Ruby:
+
+- **Same-document anchors collapse to `#frag`.** A table of contents otherwise
+  repeats the full page URL on every entry: 94 KB → 86.5 KB for that one change.
+- **`javascript:` links keep their label and lose the target**, which goes
+  nowhere anyway.
+
+### What it costs
+
+Same page: **innerText 41 KB, markdown 86.5 KB** (639 inline links). URLs cost
+characters — but **not context**, because the inline preview is capped by
+`max_chars` either way. Markdown simply packs more information into the same
+budget, which is why it is the default. The extra bytes land in the cache file,
+which is free. `format="text"` remains available when you want prose with no
+markup at all.
+
+This is not a general-purpose HTML→Markdown library. It covers the subset an
+agent reads; anything unrecognised degrades to its text.
+
+## Automatic escalation to CloakBrowser
+
+A blocked fetch used to end with `Blocked: true` and no suggestion. Agents were
+observed **reporting failure to the user instead of reaching for
+`cloak_browse`** — the tool that exists for exactly this case and defeats what
+Playwright-with-patches cannot (reCAPTCHA v3, behaviour scoring). Guidance in a
+system prompt is too far from that moment to be acted on reliably.
+
+So when a fetch ends up blocked, `yousoro_browse` retries it with CloakBrowser
+itself and returns that content:
+
+```
+Status: n/a (CloakBrowser reports none; yousoro saw 403)  Attempts: 1  Blocked: false
+Title: The Real Article
+Format: markdown  Engine: cloakbrowser (yousoro was blocked; escalated automatically)
+```
+
+- It runs **only after a block**, so a normal fetch pays nothing.
+- The header always names the engine, so a reader knows what produced the bytes.
+- CloakBrowser reports no HTTP status, so the status is attributed to the failed
+  yousoro attempt rather than printed next to `Blocked: false` as if it applied.
+- `extract` results are **dropped** on escalation: they matched the blocked page,
+  not the content now returned. Re-run with the same selector to extract from it.
+- `escalate=false` turns it off; the blocked output then names `cloak_browse` and
+  the URL explicitly, so the model has a concrete next step either way.
+
+If the escalated fetch is *also* blocked, the result says both engines failed and
+to stop retrying — that is a genuinely unreachable site, not a tool choice
+problem.
+
+The spawn logic lives in `pa-extensions/_shared/cloak.ts`, shared with
+`pa-cloakbrowser`, so the container flags cannot drift between the two callers.
+`cloak_browse` gained the same visible-text block detection at the same time: it
+runs `--dump-dom`, which exits 0 whatever it was served, so before this a
+Cloudflare interstitial came back looking exactly like the article.
+
+## Output caching: two files per fetch
+
+Every fetch writes **two** files and reports both paths. The inline result is
+only a preview.
+
+```
+/tmp/pa-browse-<host>-<ts>-<rand>.txt    complete rendered body (+ extract list)
+/tmp/pa-browse-<host>-<ts>-<rand>.html   raw DOM exactly as fetched
+```
+
+The pair shares a stem and differs only in extension. That is the whole "curl for
+web pages" idea: you get something readable by default, and the raw markup is
+still on disk for when you suspect the rendering dropped something — a table, a
+form field, a value that should have been there. Reading the `.html` beats
+re-fetching with `format="html"`: it is the same bytes, without a second request.
+
+The raw markup is a separate file rather than a third section of the `.txt`
+deliberately: the rendered body exists to be `rg`-ed, and folding 875 KB of
+markup into it would make every search hit twice and bury the readable match.
+(When `format="html"` is requested, the body already *is* the raw DOM, so no
+duplicate `.html` is written.)
+
+Caching also fixes two ways output used to be lost outright:
 
 - `extract` was **uncapped**. `extract="a"` on a link-dense page emitted every
   match into the context window — a Wikipedia article yields 483 links, i.e.
@@ -165,16 +265,20 @@ This fixes two separate ways output used to be lost:
   Truncation is head-first, so on a long page it is the *bottom* that vanishes —
   the part `scroll` had just paid to load. Recovery meant re-fetching.
 
-The file has two labelled sections and the report gives their exact line ranges,
-so `read offset=` lands on data rather than a header:
+The body section is labelled by what it actually is — `=== PAGE MARKDOWN ===`,
+`=== PAGE TEXT ===` or `=== PAGE HTML ===` — so a reader grepping the file knows
+which it got. The report gives exact line ranges, so `read offset=` lands on data
+rather than a header:
 
 ```
 --- Full content cached ---
-/tmp/pa-browse-en.wikipedia.org-20260804-181825-c97e.txt  (64 KB, 741 lines)
-  Sections: extracted TSV lines 2-484, page text lines 487-741
+  Rendered: /tmp/pa-browse-en.wikipedia.org-20260811-225859-8b45.txt  (134 KB, 1181 lines)
+  Raw HTML: /tmp/pa-browse-en.wikipedia.org-20260811-225859-8b45.html  (857 KB, 2119 lines)
+  Sections: extracted TSV lines 2-484, page body lines 487-741
   Truncation is head-first, so the TAIL is only in the file.
-  Tail:   read path="..." offset=641
+  Tail:   read path="..." offset=1081
   Search: rg -n "pattern" "..."
+  Rendering looks wrong or incomplete? Read the raw HTML file above.
 ```
 
 The extract list is stored as **TSV** (`text<TAB>attr`, one record per line, tabs
@@ -188,6 +292,11 @@ preview is still returned, with a note saying the remainder is unavailable.
 
 This is why raising `max_chars` is rarely the right move: the content is already
 on disk.
+
+The module is `pa-extensions/_shared/cache.ts`, and `cloak_browse` uses it —
+including `formatCacheFooter`, so **both tools print the identical footer**.
+There is nothing extra for an agent to learn per tool. Its unit checks live in
+`pa-yousoro-browse/selftest.mjs` and `pa-cloakbrowser/selftest.mjs`.
 
 ## Headed mode + Xvfb
 

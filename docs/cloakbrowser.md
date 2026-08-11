@@ -26,7 +26,8 @@ The CloakBrowser binary is automatically downloaded and installed during the Doc
 The `pa-cloakbrowser` extension registers a `cloak_browse` tool:
 
 ```typescript
-cloak_browse url="https://example.com" humanize=true format="html"
+cloak_browse url="https://example.com"                  # markdown by default
+cloak_browse url="https://example.com" format="text"    # prose, no markup
 ```
 
 ### Parameters
@@ -36,8 +37,72 @@ cloak_browse url="https://example.com" humanize=true format="html"
 | `url` | string | required | URL to fetch (http/https only) |
 | `humanize` | boolean | true | Enable human-like behavior (Bézier curves, realistic typing) |
 | `headless` | boolean | true | Run in headless mode |
-| `format` | enum | "html" | Response format: "html" or "markdown" |
+| `format` | enum | "markdown" | `markdown` (headings + link URLs), `text` (prose only), or `html` (raw DOM inline; rarely needed, the raw DOM is always cached) |
 | `fingerprint` | string | optional | Fixed fingerprint seed for consistent identity |
+| `max_chars` | number | 8000 | inline budget for the returned content (the full output is always cached) |
+
+## Output: readable by default, raw markup always on disk
+
+`cloak_browse` drives the binary with `--dump-dom`, which serialises the **whole
+DOM**. Measured on a Wikipedia article: **875 KB of markup**. All of it used to be
+returned inline, straight into the context window — a single fetch could consume
+most of a conversation.
+
+It now behaves like `yousoro_browse`, and like a `curl` meant for reading pages:
+
+1. the default `format="markdown"` renders headings, list markers, code fences,
+   tables and **link URLs** as `[text](url)`, resolved absolute;
+2. the inline result is a head-first preview capped by `max_chars` (default 8000);
+3. **every** fetch writes two files under `/tmp` and reports both:
+
+```
+--- Page markdown (showing 7965 of 136599 chars; lines 1-229 of 1180) ---
+[Jump to content](#bodyContent)
+...
+
+--- Full content cached ---
+  Rendered: /tmp/pa-browse-en.wikipedia.org-20260811-225859-8b45.txt  (134 KB, 1181 lines)
+  Raw HTML: /tmp/pa-browse-en.wikipedia.org-20260811-225859-8b45.html  (857 KB, 2119 lines)
+  Truncation is head-first, so the TAIL is only in the file.
+  Tail:   read path="..." offset=1081
+  Search: rg -n "pattern" "..."
+  Rendering looks wrong or incomplete? Read the raw HTML file above.
+```
+
+So "did the renderer eat the table I wanted?" is answered by reading the `.html`
+file, not by re-fetching with `format="html"`. The cache section is labelled
+`PAGE MARKDOWN` / `PAGE TEXT` / `PAGE HTML` to match what was rendered. A cache
+write failure never fails the fetch — the preview is still returned, with a note.
+
+The caching layer is `pa-extensions/_shared/cache.ts`, shared with
+`pa-yousoro-browse` down to `formatCacheFooter`, so both tools print the same
+footer (see [yousoro-browsing.md](yousoro-browsing.md#output-caching-two-files-per-fetch)).
+
+### Its markdown is noisier than yousoro_browse's, on purpose
+
+The two tools render markdown by different means, because they have different
+inputs:
+
+| | input | renderer | can drop hidden elements? |
+|---|---|---|---|
+| `yousoro_browse` | live Playwright page | DOM walk (`pa-yousoro-browse/markdown.ts`) | **yes** — `Element.checkVisibility()` |
+| `cloak_browse` | a STRING from `--dump-dom` | regexes (`_shared/html-to-markdown.ts`) | no |
+
+There is no DOM parser in the image (no jsdom, and adding one to convert markup
+is a poor trade), so `cloak_browse` cannot know what was actually rendered:
+`display:none` menus, collapsed accordions and off-screen cookie banners all
+survive. Same Wikipedia article, same fetch: **yousoro markdown 86 KB,
+cloak markdown 136 KB** — the difference is almost entirely hidden navigation.
+
+Nested list depth and complex table layout are likewise not tracked. So: prefer
+`yousoro_browse` when both work; reach for `cloak_browse` when the site demands
+it (reCAPTCHA v3, behavioural detection).
+
+The real fix is to drive CloakBrowser over **CDP** — it is a Chromium, so launch
+it with `--remote-debugging-port` and connect with the `playwright-core` already
+in the image, then reuse the DOM walker. That changes the fetch path (and the
+`--humanize` behaviour that lives in the CLI), so it is deliberately a separate
+piece of work.
 
 ## Tool Comparison
 
@@ -46,6 +111,27 @@ cloak_browse url="https://example.com" humanize=true format="html"
 | `yousoro_browse` | Chromium (JS patches) | Fast, lightweight, Cloudflare 403-then-redirect | General browsing, Cloudflare challenges |
 | `camoufox_browse` | Firefox (C++ patches) | C++ fingerprint spoofing, different profile | DataDome, PerimeterX, Turnstile |
 | `cloak_browse` | Chromium (C++ patches) | **reCAPTCHA v3**, TLS spoofing, behavioral | reCAPTCHA v3, Turnstile, behavioral detection |
+
+## You usually do not have to ask for it
+
+`yousoro_browse` **escalates to CloakBrowser automatically** when its own fetch
+comes back blocked, and says so in the header
+(`Engine: cloakbrowser (yousoro was blocked; escalated automatically)`). Call
+`cloak_browse` directly when you already know the site needs it, or when
+something other than `yousoro_browse` hit a 403/429/503 or a CAPTCHA. See
+[yousoro-browsing.md](yousoro-browsing.md#automatic-escalation-to-cloakbrowser).
+
+Both tools share the spawn logic in `pa-extensions/_shared/cloak.ts`.
+
+### Blocked pages are now reported as blocked
+
+`--dump-dom` exits 0 whatever it was served, so a Cloudflare interstitial or a
+DNS error page used to be returned as if it were the article. `cloak_browse` now
+runs the same visible-text detection `yousoro_browse` uses (challenge/CAPTCHA
+phrases in the RENDERED text, never the raw markup — challenge `<script>` tags
+survive in the DOM of a page that cleared) and marks the result as an error,
+noting that CloakBrowser is the last resort in this image so there is nothing
+further to escalate to.
 
 ## When to Use CloakBrowser
 
@@ -185,12 +271,18 @@ The free binary (v146) may not pass the latest reCAPTCHA v3. Consider:
 - `scripts/install-cloakbrowser.sh` - Downloads and installs latest CloakBrowser binary
 - `Dockerfile` - Added font installation and CloakBrowser setup
 - `pa-extensions/pa-cloakbrowser/index.ts` - Extension registering `cloak_browse` tool
+- `pa-extensions/pa-cloakbrowser/selftest.mjs` - Guards the bounded preview, the two cache files, and the markdown/text rendering (run by `smoketest.sh`)
+- `pa-extensions/_shared/cache.ts` - Shared output-caching module, incl. the footer both tools print (moved here from `pa-yousoro-browse/`)
+- `pa-extensions/_shared/html-to-markdown.ts` - Regex HTML→Markdown/text used when there is no live DOM
+- `pa-extensions/_shared/cloak.ts` - Shared binary spawn + `--dump-dom` fetch, used by `cloak_browse` and by `yousoro_browse`'s automatic escalation
 - `build.sh` - Added `CLOAKBROWSER_VERSION` build argument
 - `pa-skills/web-search/SKILL.md` - Updated with CloakBrowser documentation
 
 ## Future Improvements
 
 Potential enhancements:
+- **Drive the binary over CDP** and reuse `pa-yousoro-browse/markdown.ts`, so hidden elements are dropped and the two tools render identically (see above)
+- Extract links (`extract` / `extract_attr`) the way `yousoro_browse` does; the shared cache module already stores an extracted TSV section
 - Add proxy support parameters to the tool
 - Implement persistent browser contexts
 - Add screenshot capture capability

@@ -367,11 +367,12 @@ else
 fi
 
 # yousoro-browse behavioral guard: fingerprint init script + block/challenge
-# detection (visible-text, not raw HTML — the 403-then-redirect fix). Auth-free,
+# detection (visible-text, not raw HTML — the 403-then-redirect fix) + markdown
+# rendering + the automatic escalation to CloakBrowser on a block. Auth-free,
 # runs a real Chromium via the baked selftest.
 out="$(run 'cd /opt/pa/extensions/pa-yousoro-browse && node selftest.mjs 2>&1')"
 if echo "$out" | grep -q 'selftest: all checks passed'; then
-  pass "yousoro-browse selftest (fingerprint + detection)"
+  pass "yousoro-browse selftest (fingerprint + detection + markdown + escalation)"
 else
   fail "yousoro-browse selftest failed"
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
@@ -565,6 +566,19 @@ if echo "$out" | grep -q 'PAGE_FETCH_OK'; then
   pass "CloakBrowser successfully fetched and rendered a page"
 else
   fail "CloakBrowser failed to fetch/render example.com: $out"
+fi
+
+# pa-cloakbrowser output guard: --dump-dom returns hundreds of KB of markup, and
+# the tool used to return ALL of it inline, which could swallow a conversation.
+# Asserts the preview is bounded, the complete output is cached to a file whose
+# tail survives, and the html->text path keeps line structure (a single giant
+# line makes the cache file ungreppable).
+out="$(run 'cd /opt/pa/extensions/pa-cloakbrowser && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-cloakbrowser selftest (markdown + two cache files + block detection)"
+else
+  fail "pa-cloakbrowser selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
 # pa-rag: the walker must include dotfiles / dot-dirs / past pi sessions while

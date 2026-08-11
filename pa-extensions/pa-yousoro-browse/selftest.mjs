@@ -98,7 +98,8 @@ check("looksBlocked true on CAPTCHA text", H.looksBlocked(200, "Verification req
 check("looksBlocked false on normal 200", !H.looksBlocked(200, "Welcome to the site"));
 
 // --- (1b) Output caching: the context-blowout guard ------------------------
-// cache.ts is imported directly (node strips types natively) rather than
+// ../_shared/cache.ts (shared with pa-cloakbrowser) is imported directly
+// (node strips types natively) rather than
 // regex-scraped like the stealth helpers above -- it is a normal module with no
 // browser dependencies, so there is no reason to eval it.
 //
@@ -106,7 +107,7 @@ check("looksBlocked false on normal 200", !H.looksBlocked(200, "Welcome to the s
 // into the context window, and page text was truncated with the remainder
 // discarded. Truncation is head-first, so a long page lost its BOTTOM -- the
 // part scrolling had just paid to load.
-const C = await import(join(here, "cache.ts"));
+const C = await import(join(here, "..", "_shared", "cache.ts"));
 
 {
 	const body = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join("\n");
@@ -169,6 +170,20 @@ const C = await import(join(here, "cache.ts"));
 		const preview = C.truncateHead(text, 200);
 		check("preview omits the tail", !preview.content.includes("body line 400"));
 		check("cache file still has the tail the preview dropped", fileLines[ptEnd - 1] === "body line 400", fileLines[ptEnd - 1]);
+
+		// Both browsing tools now also keep the RAW markup next to the rendered
+		// body, so "did the renderer drop something?" is answerable without a
+		// re-fetch. Same stem, .html extension.
+		const withRaw = C.writeCache(dir, "https://www.example.com/some/page", {
+			text: "rendered body",
+			textLabel: "PAGE MARKDOWN",
+			rawHtml: "<html><body>RAW-ONLY-MARKER</body></html>",
+		});
+		check("raw DOM lands in a sibling .html", withRaw.rawPath === withRaw.path.replace(/\.txt$/, ".html"), String(withRaw.rawPath));
+		check("raw markup is kept verbatim", readFileSync(withRaw.rawPath, "utf8").includes("RAW-ONLY-MARKER"));
+		check("raw markup stays out of the greppable body", !readFileSync(withRaw.path, "utf8").includes("RAW-ONLY-MARKER"));
+		const foot = C.formatCacheFooter(withRaw, { truncated: false, sections: ["page body lines 2-2"] });
+		check("shared footer names both files and the sections", foot.includes(withRaw.path) && foot.includes(withRaw.rawPath) && foot.includes("page body lines"), foot);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -259,6 +274,90 @@ try {
 		return { stable: a === b, len: a.length };
 	});
 	check("canvas fingerprint stable within session", noise.stable);
+
+	// --- (3) format="markdown": DOM -> Markdown, run in the page --------------
+	// The point of markdown over innerText is structure and, above all, link
+	// URLs: innerText shows that a link exists but not where it goes, forcing a
+	// second extract="a" fetch. These checks pin that, plus the visibility
+	// filtering that only an in-page walk can do.
+	const M = await import(join(here, "markdown.ts"));
+	const fixture = [
+		'<nav style="display:none"><a href="https://example.com/hidden">Hidden menu</a></nav>',
+		"<h1>Title &amp; Co</h1>",
+		'<p>Intro with a <a href="https://example.com/docs?a=1">doc link</a> and <strong>bold</strong> and <code>x_y</code>.</p>',
+		"<ul><li>one</li><li>two<ul><li>nested a</li></ul></li></ul>",
+		'<ol start="3"><li>third</li></ol>',
+		"<blockquote><p>quoted line</p></blockquote>",
+		"<pre><code>def f(x)\n  x * 2\nend</code></pre>",
+		"<table><tr><th>lang</th><th>year</th></tr><tr><td>Ruby</td><td>1995</td></tr></table>",
+		'<p><a href="javascript:void(0)">js link</a> <a href="#History">jump to History</a></p>',
+		'<div style="visibility:hidden">invisible text</div>',
+	].join("\n");
+	await page.evaluate((html) => { document.body.innerHTML = html; }, fixture);
+	const md = await page.evaluate(M.domToMarkdown);
+
+	check("markdown keeps headings", md.includes("# Title & Co"), md.split("\n")[0]);
+	check(
+		"markdown carries link URLs inline (the whole point)",
+		md.includes("[doc link](https://example.com/docs?a=1)"),
+		md,
+	);
+	check("markdown resolves hrefs to absolute URLs", !/\]\(\/docs/.test(md));
+	check("markdown skips display:none subtrees", !md.includes("Hidden menu"));
+	check("markdown skips visibility:hidden nodes", !md.includes("invisible text"));
+	check("markdown nests sublists by indent", /- two\n  - nested a/.test(md), md);
+	check("markdown honours <ol start>", md.includes("3. third"), md);
+	check("markdown quotes blockquotes", md.includes("> quoted line"));
+	check("markdown fences <pre> and keeps its newlines", /```\ndef f\(x\)\n  x \* 2\nend\n```/.test(md), md);
+	check("markdown renders tables with a separator row", md.includes("| lang | year |") && md.includes("| --- | --- |"));
+
+	// Old sites (Hacker News, mailing list archives) lay pages out with NESTED
+	// tables. Rendering those as tables duplicates every cell into giant
+	// pipe-rows: measured 29KB of duplicated junk vs 14KB clean for one HN page.
+	await page.evaluate(() => {
+		document.body.innerHTML =
+			'<table><tr><td><table><tr><td>header cell</td></tr></table></td></tr>' +
+			'<tr><td><p>story <a href="https://ex.org/1">one</a></p></td></tr></table>';
+	});
+	const layout = await page.evaluate(M.domToMarkdown);
+	check("layout tables are walked, not rendered as tables", !layout.includes("| --- |"), layout);
+	check("layout table content survives", layout.includes("header cell") && layout.includes("[one](https://ex.org/1)"), layout);
+	check("nested layout tables do not duplicate cells", layout.split("header cell").length - 1 === 1, layout);
+	check("markdown keeps code spans literal (no escaping inside)", md.includes("`x_y`"), md);
+	check("markdown drops javascript: targets but keeps the label", md.includes("js link") && !md.includes("javascript:"));
+	// A TOC of same-page anchors otherwise repeats the whole page URL per entry.
+	check("markdown shortens same-document anchors to #frag", md.includes("[jump to History](#History)"), md);
+
+	// innerText is the baseline this exists to beat: same page, no URL anywhere.
+	const flat = await page.evaluate(() => document.body.innerText);
+	check("innerText really does lose the URLs (baseline)", !flat.includes("https://example.com/docs"));
+
+	// The tool now defaults to markdown; `text` and `html` remain reachable.
+	const idx = readFileSync(join(here, "index.ts"), "utf8");
+	check("index.ts defaults to markdown", /params\.format === "text" \|\| params\.format === "html" \? params\.format : "markdown"/.test(idx));
+	check("index.ts always captures the raw DOM", /const html: string = await page\.content\(\)/.test(idx));
+	check("index.ts caches the raw DOM alongside the body", /rawHtml: format === "html" \? undefined : result\.html/.test(idx));
+	check("index.ts uses the shared footer (identical to cloak_browse)", /formatCacheFooter\(cache, \{/.test(idx));
+
+	// --- (4) escalation to CloakBrowser on a block --------------------------
+	// Agents were observed reporting "blocked" to the user instead of reaching
+	// for cloak_browse, so the escalation happens in code, and the blocked text
+	// says what to do next AT the moment of failure.
+	check("index.ts escalates to CloakBrowser when blocked", /if \(result\.blocked && escalate\)/.test(idx));
+	check("escalation is opt-out, i.e. on by default", /params\.escalate !== false/.test(idx));
+	// "Only after a block" is the property that keeps a normal fetch free, so
+	// assert the position of the call, not just that some guard exists.
+	const guardAt = idx.indexOf("if (result.blocked && escalate)");
+	const callAt = idx.indexOf("cloakDumpDom({");
+	check("cloakDumpDom is called exactly once", idx.split("cloakDumpDom({").length - 1 === 1);
+	check("escalation only runs after a block (a normal fetch pays nothing)", guardAt > 0 && callAt > guardAt, `guard@${guardAt} call@${callAt}`);
+	check("successful escalation clears the blocked flag", /result\.blocked = false;/.test(idx));
+	check("successful escalation reports which engine won", /Engine: \$\{/.test(idx) && /escalated automatically/.test(idx));
+	check("escalated status is attributed, not left contradictory", /CloakBrowser reports none; yousoro saw/.test(idx));
+	check("stale extract list is dropped after escalation", /result\.extracted = undefined;/.test(idx));
+	check("blocked+escalate tells the agent to stop retrying", /Do not retry either one/.test(idx));
+	check("blocked+no-escalate names cloak_browse explicitly", /retry this URL with the cloak_browse tool/.test(idx));
+	check("attempts counter is clamped (loop runs one past)", /Math\.min\(attempt, opts\.maxAttempts\)/.test(idx));
 } finally {
 	await browser.close();
 }

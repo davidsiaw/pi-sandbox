@@ -82,20 +82,56 @@ auto_load: true
 - `wait_ms`——JS 重之頁多候（試 `3000`+）。
 - `max_attempts`——遭擋則退避重試（默 4；勿改）。
 - `max_chars`——內聯頁文之預算（默 8000）。`max_items`——內聯 `extract` 列之預算（默 50）。
+- `format`——`"markdown"`（默）／`"text"`／`"html"`。見下。
 
-### 全文入檔，預覽而已
+### `format="markdown"`（默）：連鏈之徑亦存
 
-每一取，其**全**文與**全**鏈必書於 `/tmp/pa-browse-<host>-<ts>.txt`，而告其徑。
-所返者实乃預覽；截斷自首而計，故**頁之尾唯存於檔**。
+`"text"` 乃 `innerText`，平而無構：標題、列之層、**及每一鏈之 URL** 皆失。
+故見鏈而不知其所往，須再以 `extract="a" extract_attr="href"` 取之，一頁而兩取——
+此所以不復為默也。
 
-- 報中明列兩段之行數（`extracted TSV lines a-b`、`page text lines c-d`），
+`"markdown"` 則存標題、列（含嵌套）、表、碼塊、引文，而鏈作 `[文](絕對 URL)`。
+隱而不見者（`display:none` 之圖、cookie 幅）自去。同頁之錨縮為 `#frag`。
+
+**其費幾何**：同一維基頁，`text` 四萬一千字，`markdown` 八萬六千字（含 639 鏈）。
+然**內聯之費不增**——預覽恆以 `max_chars` 為限，`markdown` 不過於同一預算中載更多之訊耳；
+餘者落於檔，檔不費脈。故默取 `markdown`。唯欲純文無標記者，取 `"text"`。
+
+**既得 markdown，勿再以 `extract="a"` 重取一遍以求其鏈**——鏈已在文中。
+
+### 全文入檔，預覽而已（每取二檔）
+
+每一取，必書**二檔**於 `/tmp`，而告其二徑；所返者不過預覽：
+
+```
+/tmp/pa-browse-<host>-<ts>-<rand>.txt    所渲之全文（＋ extract 之列）
+/tmp/pa-browse-<host>-<ts>-<rand>.html   原始 DOM，如取之貌
+```
+
+二者同幹而異尾。此即「讀頁之 curl」之意：默予汝可讀者，而原始之標記猶存於盤。
+
+- 截斷自首而計，故**頁之尾唯存於檔**。報中明列兩段之行數，
   可徑以 `read path="<其徑>" offset=<n>` 跳至尾，或 `rg -n "pattern" "<其徑>"` 搜之。
+- **疑其渲染有漏者**（表、表單、應有之值不見），**讀其 `.html`**，
+  勿以 `format="html"` 重取——同一之位元，而省一請求。
 - 鏈列存為 **TSV**（`text<TAB>href`，一行一筆），宜 `rg`、`cut`。
 - 與 pi 之 `bash` 具同理（其溢出入 `/tmp/pi-bash-*.log`）。檔隨匣而滋。
 
 **故見「truncated」勿忙提高 `max_chars` 重取——其文既在檔中，讀之即得。**
 
-具已掩自動化指紋、重試瞬擋，故 `blocked: true` 者，乃真不得過也。
+### 遭擋則自升 CloakBrowser（勿自報失敗）
+
+具已掩自動化指紋、重試瞬擋；**若終仍遭擋，其自以 CloakBrowser 再取一過**，
+得則返其文，而於首行明告 `Engine: cloakbrowser (yousoro was blocked; escalated automatically)`。
+故：
+
+- **不必汝手召 `cloak_browse`**——`yousoro_browse` 已自為之。
+- 若其報 `Blocked: true` **於自升之後**，乃二引擎皆敗，是真不得過也：
+  **另尋一源，勿捶之，亦勿重試同一具**。
+- 唯設 `escalate=false` 者不自升；其時報中明言「Next step: cloak_browse url=...」，
+  當即從之，勿以「此站遭擋」覆命於用戶。
+- 凡以他法取頁而遭 403／429／503 或 CAPTCHA 者（非經 `yousoro_browse`），
+  **即以 `cloak_browse` 試同一 URL**，然後乃言不得。
 
 ### 集一頁之鏈
 
@@ -145,12 +181,23 @@ CloakBrowser 乃 Chromium 之 fork，具 **71 處 C++ 源級修補**（非 JavaS
 - `url`——所取之頁（http／https）。
 - `humanize`——`true`／`false`，啟人類行為模擬（Bézier 曲線、真實打字時序）。**默 `true`**。
 - `headless`——`true`／`false`，頭less 模式。默 `true`。
-- `format`——`"html"`／`"markdown"`，返格式。默 `"html"`。
+- `format`——`"markdown"`（默）／`"text"`／`"html"`。默即予可讀之 markdown（含鏈之徑）。
+  `"html"` 者原始 DOM，然**罕需之**：原始 DOM 每取必書於 `.html` 之檔。
 - `fingerprint`——可選，固定指紋種子（同一站用同一種子，似回訪者）。
+- `max_chars`——內聯之預算（默 8000）。
 
 ```
-cloak_browse url="https://example.com" humanize=true format="html"
+cloak_browse url="https://example.com"
 ```
+
+**全文入檔，預覽而已**（與 `yousoro_browse` 同理，footer 亦同）：
+每取必書二檔——`<幹>.txt`（所渲之全文）與 `<幹>.html`（原始 DOM）——而告其二徑。
+見「truncated」勿忙重取；疑其渲染有漏，讀其 `.html`。
+
+**其 markdown 較 `yousoro_browse` 為雜**，非誤也：`--dump-dom` 所返者字串耳，
+無活頁可問何者可見，故 `display:none` 之圖、cookie 幅皆不能去
+（同一維基頁：yousoro 八萬六千字，cloak 十三萬六千字，其差幾盡在隱藏之導航）。
+**二者皆可時，先取 `yousoro_browse`**；唯站需 reCAPTCHA v3／行為檢測者，乃用 cloak。
 
 **注意**：
 - 匣中預備者為 **免費版 v146**（可能漸舊）。若需最新版及 0.9 reCAPTCHA，設 `CLOAKBROWSER_LICENSE_KEY`。
@@ -259,6 +306,8 @@ cloak_browse url="https://example.com" humanize=true format="html"
 
 通則：多數 Cloudflare「Just a moment」瞬擋今由 yousoro_browse 自過（Google Chrome 指紋、真 GPU、候其自解）。此類站行「**先 403 後轉**」之關——首返 403 挑戰頁，指紋過則轉真頁；故初之 403 非真擋，工具候其自解，過則以 200 論。然**圖形 CAPTCHA（PyPI、Mojeek）與最硬之 managed challenge（find.4chan.org）仍不得過**——此非指紋之事，乃須解謎或真 residential IP。若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
 
+**今 `yousoro_browse` 遭擋則自升 CloakBrowser**（見上），故所見之 `Blocked: true`，乃二引擎皆敗之果，非未試最強者也。
+
 **重難點突破：**
 - **reCAPTCHA v3**: 僅 `cloak_browse` 能穩定通過 (0.9 分，Pro 版)。其他工具通常失敗。
 - **Cloudflare Turnstile**: `yousoro_browse` (403-then-redirect 處理), `cloak_browse` (C++ 級別) 均可。
@@ -296,5 +345,5 @@ cloak_browse url="https://example.com" humanize=true format="html"
 - **勿於何處手改 `Accept` 頭**——某站（Reddit）返削之三項 fallback。yousoro_browse 已避此。
 - feed（Reddit、鏡）需 `scroll` 以載首數項之外。
 - `extract` 返 **innerText**；唯 `extract_attr` 返 URL。集鏈**必**傳 `extract_attr="href"`。
-- 機房／民 IP 之擋乃每站之限速——若 `blocked: true` 重試後仍持，則另尋一源，勿捶之。
+- 機房／民 IP 之擋乃每站之限速——若 `blocked: true` 重試（含自升 CloakBrowser）後仍持，則另尋一源，勿捶之。
 - 擇內容域之 selector（`article a`、`main a`）勝裸 `a`，以減候選集之 nav／樣板之雜。

@@ -1,5 +1,10 @@
 /**
- * pa-yousoro-browse/cache.ts — spill the full fetch to a file, preview inline.
+ * _shared/cache.ts — spill the full fetch to a file, preview inline.
+ *
+ * Shared by pa-yousoro-browse and pa-cloakbrowser: both fetch a whole web page,
+ * and both would otherwise dump it into the context window in one go.
+ * cloak_browse in particular returns raw DOM HTML, which is the worst case —
+ * tens of thousands of tokens of markup for a page whose text is a few hundred.
  *
  * WHY THIS EXISTS
  * A tool result goes straight into the context window, so a big page is
@@ -121,6 +126,22 @@ export interface CacheInput {
 	extractAttr?: string;
 	extracted?: ExtractedItem[];
 	text: string;
+	/**
+	 * Section heading for the body, default "PAGE TEXT". The body may be rendered
+	 * markdown or raw HTML, and calling either "PAGE TEXT" would mislead a reader
+	 * grepping the file about what it is looking at.
+	 */
+	textLabel?: string;
+	/**
+	 * The raw markup as fetched, written to a SIBLING `.html` file.
+	 *
+	 * Why a second file rather than a third section in the same one: the rendered
+	 * body exists to be grepped, and folding 875KB of markup into it would make
+	 * every `rg` hit twice and bury the readable match. Separate files keep the
+	 * common case clean while the raw DOM stays one `read` away for when the
+	 * rendering looks like it dropped something.
+	 */
+	rawHtml?: string;
 }
 
 /**
@@ -147,7 +168,7 @@ export function buildCacheDocument(input: CacheInput): CacheDocument {
 		lines.push("");
 	}
 
-	lines.push(`=== PAGE TEXT === ${input.text.length} chars`);
+	lines.push(`=== ${input.textLabel ?? "PAGE TEXT"} === ${input.text.length} chars`);
 	if (input.text.length > 0) {
 		const start = lines.length + 1;
 		const body = input.text.endsWith("\n") ? input.text.slice(0, -1) : input.text;
@@ -160,11 +181,13 @@ export function buildCacheDocument(input: CacheInput): CacheDocument {
 }
 
 /**
- * Filename carries the host and a timestamp so repeated fetches are
+ * Filename STEM, carrying the host and a timestamp so repeated fetches are
  * distinguishable at a glance; the random suffix stops two fetches of the same
- * host in the same second from clobbering each other.
+ * host in the same second from clobbering each other. The rendered body and the
+ * raw markup share the stem and differ only in extension, so the pair is
+ * obviously a pair in a `ls /tmp`.
  */
-export function cacheFileName(rawUrl: string, now: Date = new Date()): string {
+export function cacheFileStem(rawUrl: string, now: Date = new Date()): string {
 	let host = "page";
 	try {
 		const h = new URL(rawUrl).hostname.replace(/^www\./, "").replace(/[^a-zA-Z0-9.-]/g, "-");
@@ -174,18 +197,85 @@ export function cacheFileName(rawUrl: string, now: Date = new Date()): string {
 	}
 	const ts = now.toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
 	const rand = Math.random().toString(16).slice(2, 6);
-	return `pa-browse-${host}-${ts}-${rand}.txt`;
+	return `pa-browse-${host}-${ts}-${rand}`;
 }
 
 export interface CacheInfo extends CacheDocument {
 	path: string;
 	bytes: number;
+	/** Present only when rawHtml was supplied and written. */
+	rawPath?: string;
+	rawBytes?: number;
+	rawLines?: number;
 }
 
-/** Write the cache file. Throws on IO failure; the caller degrades gracefully. */
+/**
+ * Write the cache file(s). Throws on IO failure; the caller degrades gracefully.
+ *
+ * The rendered body always lands in `<stem>.txt`; raw markup, when given, in
+ * `<stem>.html`.
+ */
 export function writeCache(dir: string, rawUrl: string, input: CacheInput): CacheInfo {
 	const doc = buildCacheDocument(input);
-	const path = join(dir, cacheFileName(rawUrl));
+	const stem = join(dir, cacheFileStem(rawUrl));
+	const path = `${stem}.txt`;
 	writeFileSync(path, doc.content, "utf8");
-	return { ...doc, path, bytes: Buffer.byteLength(doc.content, "utf8") };
+
+	let rawPath: string | undefined;
+	let rawBytes: number | undefined;
+	let rawLines: number | undefined;
+	if (input.rawHtml) {
+		rawPath = `${stem}.html`;
+		writeFileSync(rawPath, input.rawHtml, "utf8");
+		rawBytes = Buffer.byteLength(input.rawHtml, "utf8");
+		rawLines = countLines(input.rawHtml);
+	}
+
+	return { ...doc, path, bytes: Buffer.byteLength(doc.content, "utf8"), rawPath, rawBytes, rawLines };
+}
+
+function kb(bytes: number): number {
+	return Math.max(1, Math.round(bytes / 1024));
+}
+
+/**
+ * The footer is the entire point of caching: it tells the caller what it did NOT
+ * see and hands it commands to get the rest. Shared by both browsing tools so
+ * they report identically — an agent should not have to learn two dialects of
+ * "the rest is on disk".
+ */
+export function formatCacheFooter(
+	cache: CacheInfo,
+	opts: { truncated: boolean; sections?: string[] },
+): string {
+	const lines = [
+		"\n--- Full content cached ---",
+		`  Rendered: ${cache.path}  (${kb(cache.bytes)} KB, ${cache.totalLines} lines)`,
+	];
+	if (cache.rawPath) {
+		lines.push(`  Raw HTML: ${cache.rawPath}  (${kb(cache.rawBytes ?? 0)} KB, ${cache.rawLines} lines)`);
+	}
+	if (opts.sections && opts.sections.length > 0) {
+		lines.push(`  Sections: ${opts.sections.join(", ")}`);
+	}
+	if (opts.truncated) {
+		lines.push(
+			"  Truncation is head-first, so the TAIL is only in the file.",
+			`  Tail:   read path="${cache.path}" offset=${Math.max(1, cache.totalLines - 100)}`,
+			`  Search: rg -n "pattern" "${cache.path}"`,
+		);
+	}
+	if (cache.rawPath) {
+		lines.push("  Rendering looks wrong or incomplete? Read the raw HTML file above.");
+	}
+	return lines.join("\n");
+}
+
+/** Same shape as the footer, for when the cache could not be written at all. */
+export function formatCacheFailure(err: unknown): string {
+	const msg = err instanceof Error ? err.message : String(err);
+	return (
+		`\n--- Full content NOT cached ---\nCould not write the cache file: ${msg}.\n` +
+		"Anything truncated above is unavailable without re-fetching."
+	);
 }
