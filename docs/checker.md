@@ -162,6 +162,45 @@ file and that line. Raise a faithfulness concern when you have *looked* and the
 evidence contradicts the claim, or when the tool log positively shows the work
 never happened — not because the window in front of you is silent.
 
+## Recall: the other kind of failure
+
+Tuning against false positives buys false negatives, and the first one was
+instructive. Asked "hi" in English, the model replied `你好！有什么我可以帮你的？` —
+breaking a rule stated plainly in the system prompt it had been given. The
+reviewer said **looks good**.
+
+Nothing was missing from the payload; `ctx.getSystemPrompt()` includes the
+`APPEND_SYSTEM` text, so the rule was right there. The carve-outs added to stop
+it inventing objections had simply grown wide enough to swallow a real one:
+*"leave style and taste alone"* (a language is a style?) and *"conversation
+deserves answers in kind"* (so a greeting needs no scrutiny).
+
+The line is now drawn where it belongs — **your** taste is out of scope, a rule
+the user wrote down never is:
+
+> The test is simple: could you point at the line being broken? Then it is in
+> scope, however minor. Is it just how you would have phrased it? Then it is not.
+
+Compliance is also no longer judged by feel. The reviewer is told to find the
+concrete, checkable rules in the system prompt and hold the answer against each,
+with language, format, always/never and required steps named as the ones most
+often missed — "because the answer reads perfectly well until you actually
+check".
+
+### `checked`
+
+The verdict now carries a list of what the reviewer actually held the answer
+against, and it is shown to you:
+
+```
+pa-checker: looks good (m5-max/Qwen3.6-27B) · checked: reply language matches the user's, no claims about files
+```
+
+It is a forcing function — enumerating is harder to skip than gesturing — and it
+is how you tell a real review from a skimmed one. It is optional: a verdict
+without it still passes, because a nudge toward better reviews must never become
+a new way for the review to fail.
+
 ## Tone
 
 The reviewer's words are read by the model on every revision, and by you whenever

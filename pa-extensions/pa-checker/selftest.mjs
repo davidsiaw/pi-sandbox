@@ -553,6 +553,54 @@ const load = () => {
   check("auditor is framed as a colleague, not a judge", /colleague/i.test(systemPrompt) && /not to sit in judgement/i.test(systemPrompt));
   check("auditor is told most answers are fine", /Most answers are fine/i.test(systemPrompt));
   check("auditor is told to assume good faith", /good faith/i.test(systemPrompt));
+
+  // Recall floor. Tuning against false positives cost a real one: an English
+  // "hi" answered in Chinese, breaking an explicit rule in the very system
+  // prompt the reviewer was handed, came back "looks good". The tone stays; the
+  // carve-outs must not swallow rules the user actually wrote down.
+  check("reply language is named as a checkable rule", /WHAT LANGUAGE TO REPLY IN/i.test(systemPrompt));
+  check("replying in the wrong language is called a real violation", /not a stylistic quibble/i.test(systemPrompt));
+  check("the style carve-out is limited to the reviewer's OWN taste", /YOUR style and taste/.test(systemPrompt));
+  check("a written-down rule is excluded from 'taste'", /is not a matter of taste/i.test(systemPrompt));
+  check("'only a small thing' is refused as a reason to pass", /only a small thing/i.test(systemPrompt));
+  check("chat turns are still bound by the system prompt", /does not suspend the rules/i.test(systemPrompt));
+  check("compliance must be enumerated, not felt", /Do not judge this by feel/i.test(systemPrompt));
+  check("the verdict contract asks what was checked", /"checked"/.test(systemPrompt));
+}
+
+// --- `checked` is captured and surfaced -----------------------------------
+{
+  respondWith('{"verdict":"pass","checked":["reply language matches the user\'s","no claims about files"]}');
+  const inst = load();
+  const ctx = makeCtx();
+  await inst.emit("agent_settled", {}, ctx);
+  const note = ctx.notes.join("|");
+  check("a passing review reports what it checked", /checked: reply language matches the user's, no claims about files/.test(note), note);
+}
+{
+  // A reviewer that omits the list must still produce a usable verdict — the
+  // forcing function is a nudge, not a new way to fail.
+  respondWith('{"verdict":"pass"}');
+  const inst = load();
+  const ctx = makeCtx();
+  await inst.emit("agent_settled", {}, ctx);
+  check("a pass without a checked list still passes", ctx.notes.some((n) => n.includes("looks good")) && inst.sent.length === 0, ctx.notes.join("|"));
+}
+{
+  respondWith('{"verdict":"revise","checked":["reply language"],"criticism":"The user wrote in English; the reply is in Chinese."}');
+  const inst = load();
+  await inst.emit("agent_settled", {}, makeCtx());
+  const { message } = inst.sent[0] ?? {};
+  check("what was checked is recorded on the message", Array.isArray(message?.details?.checked) && message.details.checked[0] === "reply language", JSON.stringify(message?.details));
+  check("the criticism itself still comes through", message?.content?.includes("the reply is in Chinese"));
+}
+{
+  // Junk in `checked` must not crash or leak into the notification.
+  respondWith('{"verdict":"pass","checked":[null,42,"  ","language"]}');
+  const inst = load();
+  const ctx = makeCtx();
+  await inst.emit("agent_settled", {}, ctx);
+  check("a malformed checked list is filtered, not fatal", ctx.notes.some((n) => n.includes("checked: language")), ctx.notes.join("|"));
 }
 
 // --- REGRESSION: the checker must see its OWN previous objection ---
