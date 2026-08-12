@@ -439,7 +439,48 @@ export const BLOCK_MARKERS = [
 	"client challenge",
 	"please solve the challenge",
 	"enter the characters seen in the image",
+	// Google's /sorry/ interstitial. It is the block a datacenter IP hits most
+	// often, and it was the one shape that slipped through every check: it is
+	// served as HTTP **200**, its title is the requested URL rather than anything
+	// challenge-like, and it says "not a robot" -- which does not contain any of
+	// the phrases above ("are you a robot", "i'm not a robot"). So it was reported
+	// as a successful fetch of a page whose entire content is the refusal, and
+	// escalation never fired. Match its own wording instead.
+	//
+	// Deliberately NOT the bare phrase "not a robot": a page legitimately
+	// discussing CAPTCHAs contains it, and a false block is worse than a missed
+	// one -- it would discard a good page and burn a CloakBrowser fetch. "detected
+	// unusual traffic" is Google's own wording and specific enough.
+	"detected unusual traffic",
+	"unusual traffic from your computer network",
 ];
+
+// Blocks that RETRYING CANNOT FIX, because they are a verdict on the IP or a
+// puzzle a human has to solve -- not the transient rate-limit the backoff loop
+// was built for.
+//
+// The backoff exists for "too many requests, come back later", where waiting is
+// the answer. Google's /sorry/ is the opposite: it is IP reputation, so attempts
+// 2, 3 and 4 return the identical page and cost 27s of sleeping (6+9+12s) plus
+// three more page loads to learn nothing. Measured in a live drive.
+//
+// This does NOT suppress escalation. CloakBrowser has a different fingerprint
+// and is still worth one try; what is skipped is only re-asking the same engine
+// the same question.
+export const HOPELESS_MARKERS = [
+	"detected unusual traffic",
+	"unusual traffic from your computer network",
+	"enter the characters seen in the image",
+	"please solve the challenge",
+	"client challenge",
+];
+
+// Visible-text based, like the others. A block already detected by looksBlocked
+// is asked whether retrying it has any chance.
+export function looksHopeless(visibleText: string): boolean {
+	const lower = visibleText.toLowerCase();
+	return HOPELESS_MARKERS.some((m) => lower.includes(m));
+}
 
 // Cloudflare / interstitial challenge markers. These are NOT permanent blocks:
 // the page runs JS and redirects to the real content once the check passes, so

@@ -24,6 +24,20 @@
  *     unreachable from page JS). Image CAPTCHAs and the hardest managed
  *     challenges are reported as blocked so the caller can move on.
  *
+ * WHERE THE USAGE DOCS LIVE
+ * The how-to -- which search engines answer from this IP, link harvesting with
+ * extract=, bounded BFS, the /tmp cache files, what to do when a page is still
+ * blocked -- lives in the `web-search` SKILL (pa-skills/web-search/SKILL.md),
+ * not in this tool's description or guidelines.
+ *
+ * Descriptions and promptGuidelines sit in the system prompt of EVERY session,
+ * whether or not a page is ever fetched; a skill body is loaded on demand. So
+ * what is here carries only what decides WHEN to reach for the tool, and points
+ * at the skill for HOW. Collapsing eleven guideline bullets into two cut ~380
+ * tokens of always-resident prompt, most of which restated the skill verbatim
+ * while telling the model to go read it. Keep it that way: a new bullet about
+ * HOW belongs in the skill.
+ *
  * Playwright is not bundled; it is resolved from the global install baked into
  * the pa image (/usr/lib/node_modules/playwright), with the Chromium browsers
  * at /opt/ms-playwright. See docs/yousoro-browsing.md.
@@ -51,6 +65,7 @@ import {
 	loadChromium,
 	looksBlocked,
 	looksChallenge,
+	looksHopeless,
 	makeYousoroInitScript,
 	secChUa,
 	visibleText,
@@ -183,9 +198,25 @@ async function yousoroFetch(
 
 			if (!blocked) break;
 
+			// Retrying an IP-reputation verdict or a human-solvable puzzle returns the
+			// identical page, so stop after the first look and let escalation (a
+			// different engine, different fingerprint) be the thing that gets tried.
+			if (looksHopeless(vtext)) {
+				onProgress("Blocked in a way retrying cannot fix; not backing off.");
+				break;
+			}
+
+			// ONE backoff, then let escalation take over. maxAttempts defaults to 2.
+			//
+			// It used to be 4, which cost 27s of sleeping (6+9+12s) plus three extra
+			// page loads before CloakBrowser was ever tried. That ordering was
+			// backwards: a second identical request rarely changes a block, whereas a
+			// different engine with a different fingerprint sometimes does. So the
+			// cheap retry (for a genuinely transient hiccup) happens once, and after
+			// that the budget goes to the thing that might actually work.
 			if (attempt < opts.maxAttempts) {
 				const backoff = 3000 + attempt * 3000;
-				onProgress(`Blocked (status ${status}). Backing off ${backoff}ms...`);
+				onProgress(`Blocked (status ${status}). Backing off ${backoff}ms once...`);
 				await page.waitForTimeout(backoff);
 			}
 		}
@@ -283,7 +314,9 @@ const PARAMS = Type.Object({
 	),
 	max_attempts: Type.Optional(
 		Type.Number({
-			description: "Max attempts with backoff when the page looks blocked. Default 4.",
+			description:
+				"Max attempts with backoff when the page looks blocked. Default 2: one retry, " +
+				"then escalate to CloakBrowser, which is likelier to help than a third try.",
 		}),
 	),
 	scroll: Type.Optional(
@@ -367,35 +400,23 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 		label: "Yousoro Browse",
 		description:
 			"CRITICAL: Load the 'web-search' skill first for search/browsing guidance. " +
-			"Fetch a web page with a fingerprint-masked headless Chromium (Google " +
-			"Chrome UA + userAgentData, real WebGL GPU, coherent macOS hardware, " +
-			"canvas/audio noise, human-ish interaction), wait out Cloudflare " +
-			"\"Just a moment\" 403-then-redirect challenges, and retry-with-backoff on " +
-			"bot/rate-limit blocks. Use this to read pages that reject plain headless " +
-			"browsers with 403/429/503 (e.g. Reddit, Cloudflare-fronted sites). Returns " +
-			"readable Markdown by default (headings, lists, tables, and link URLs inline " +
-			'as [text](url)); format="text" gives flat innerText. Optionally also returns ' +
-			"innerText (and an attribute such as href) of " +
-			"elements matching a CSS selector — use extract=\"a\" extract_attr=\"href\" " +
-			"to collect links with their text. EVERY fetch writes two files under /tmp and " +
-			"reports both paths: the complete rendered body (.txt) and the raw DOM " +
-			"(.html), so anything truncated — or anything the rendering may have dropped — " +
-			"is recovered with read or rg instead of re-fetching. If the page comes back " +
-			"blocked, this tool automatically retries it with CloakBrowser and returns " +
-			"that content, reporting which engine won.",
+			"Fetch a web page with a fingerprint-masked headless Chromium, waiting out " +
+			"Cloudflare \"Just a moment\" challenges and retrying on bot/rate-limit " +
+			"blocks, so it reads pages that reject plain headless browsers with " +
+			"403/429/503 (Reddit, Cloudflare-fronted sites). If a page is still blocked " +
+			"it escalates to CloakBrowser by itself and says which engine won, so a " +
+			"block needs no follow-up call. Returns Markdown with link URLs inline as " +
+			"[text](url), and always writes the full body and raw DOM to /tmp, reporting " +
+			"both paths, so nothing is lost to truncation. Read the 'web-search' skill " +
+			"for how to drive it.",
 		promptSnippet: "Fetch a web page past bot-blocks using the yousoro headless browser",
+		// Two bullets, both about WHEN to reach for it. Everything about HOW --
+		// caching, extract, scroll, truncation, escalation, engine choice -- lives in
+		// the web-search skill, loaded on demand instead of riding in every system
+		// prompt. See the WHERE THE USAGE DOCS LIVE note in the header.
 		promptGuidelines: [
-			"CRITICAL: Before using yousoro_browse for search/browsing tasks, load the 'web-search' skill which contains essential guidance on search engines, BFS strategies, and blocked-site handling.",
-			"Use yousoro_browse to read a web page when a normal fetch is blocked (403/429/503) or when the site is known to reject headless browsers (Reddit, Cloudflare).",
-			"Prefer yousoro_browse over ad-hoc Playwright scripts for one-off page reads.",
-			"A blocked page is not a dead end: yousoro_browse escalates to CloakBrowser by itself, and the result says which engine produced the content. If a result still reports BLOCKED after that, both engines failed — switch sources instead of retrying.",
-			"If you ever fetch a page WITHOUT yousoro_browse (or with escalate=false) and it is blocked with 403/429/503 or a CAPTCHA, immediately try cloak_browse on the same URL rather than reporting failure to the user.",
-			"Set yousoro_browse scroll>0 for infinite-scroll feeds (e.g. Reddit) so lazy-loaded items are captured.",
-			'Use yousoro_browse with extract="a" extract_attr="href" to collect candidate links (text + absolute URL) from a page before deciding which to follow.',
-			'yousoro_browse returns Markdown by default, so link URLs are already inline as [text](url) — do not follow a fetch with a second extract="a" extract_attr="href" fetch just to learn where the links go. Use format="text" only when you want prose with no markup.',
-			"yousoro_browse always caches the full rendered body plus the full extract list to /tmp (<stem>.txt), and the raw DOM alongside it (<stem>.html). The inline output is only a preview: when it reports truncation, read or rg those files rather than re-fetching with a bigger max_chars.",
-			"If the rendered output looks like it swallowed something (a table, a form, a value you expected), read the .html file it reported instead of re-fetching with format=\"html\".",
-			"Page-text truncation is head-first, so the BOTTOM of a long page is what the preview omits. The report gives total line counts \u2014 use read with offset to jump to the tail of the cache file.",
+			"Use yousoro_browse for anything web: fetching a URL, reading a page, searching, verifying a fact. Never curl/wget/fetch/ad-hoc Playwright -- this is a datacenter IP and those get blocked (403/429/503).",
+			"READ THE 'web-search' SKILL FIRST for any search or multi-page research. It covers which engines work from here, link harvesting, bounded BFS, the /tmp cache files, and what to do when a page is still blocked.",
 		],
 		parameters: PARAMS,
 		async execute(_toolCallId, params, signal, onUpdate) {
@@ -444,7 +465,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 						extract: params.extract,
 						extractAttr: params.extract_attr,
 						waitMs: params.wait_ms ?? 2500,
-						maxAttempts: params.max_attempts ?? 4,
+						maxAttempts: params.max_attempts ?? 2,
 						scroll: params.scroll ?? 0,
 						scrollWaitMs: params.scroll_wait_ms ?? 1500,
 						timezone: "Asia/Tokyo",

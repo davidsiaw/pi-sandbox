@@ -19,6 +19,21 @@
  * Both paths are reported, so "did the rendering eat something?" is answered by
  * reading the raw file instead of re-fetching. Same contract as yousoro_browse,
  * sharing ../_shared/cache.ts.
+ *
+ * WHERE THE USAGE DOCS LIVE
+ * The how-to -- humanize, fingerprint seeds, why this markdown is noisier than
+ * yousoro's, the cache files -- lives in the `web-search` SKILL, not here.
+ * Descriptions and promptGuidelines sit in the system prompt of EVERY session,
+ * whether or not a page is ever fetched; a skill body is loaded on demand. So
+ * what is here carries only what decides WHEN to reach for the tool.
+ *
+ * Two bullets were deleted rather than moved. "The free binary (v146) is baked
+ * in; Pro license needed for latest builds" decides nothing at the call site --
+ * there is no Pro binary to reach for, so it only invited the model to explain a
+ * licence to the user; it is documented above and in the skill instead. And
+ * "if yousoro_browse or camoufox_browse fail, try cloak_browse" named a tool that
+ * does not exist in this image, and understated the real contract: yousoro_browse
+ * escalates here BY ITSELF, so the model does not need to chain the call at all.
  */
 
 import { tmpdir } from "node:os";
@@ -81,23 +96,20 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
     name: "cloak_browse",
     label: "CloakBrowser Browse",
     description:
-      "Fetch a web page using CloakBrowser (stealth Chromium with 71 C++ source-level patches). " +
-      "Use this for sites with reCAPTCHA v3, Cloudflare Turnstile, or behavioral detection. " +
-      "The free binary (v146) is baked into the image. Returns readable Markdown " +
-      "(headings, list markers, link URLs), capped to a head-first preview. EVERY " +
-      "fetch also writes two files under /tmp and reports both paths: the complete " +
-      "rendered body (.txt) and the raw DOM exactly as fetched (.html), so anything " +
-      "truncated \u2014 or anything the rendering may have dropped \u2014 is recovered with " +
-      "read or rg instead of a re-fetch.",
+      "Fetch a web page using CloakBrowser (stealth Chromium with 71 C++ " +
+      "source-level patches, so it clears reCAPTCHA v3, Cloudflare Turnstile and " +
+      "behavioral detection that JavaScript-patched browsers do not). This is the " +
+      "specialist: yousoro_browse escalates to it automatically when a page is " +
+      "blocked, so reach for it directly only when you already know the site " +
+      "needs it. Returns readable Markdown; the complete body and raw DOM are " +
+      "always written to /tmp and both paths reported, so nothing is lost to " +
+      "truncation. Read the 'web-search' skill for how to drive it.",
     promptSnippet: "Fetch a web page using CloakBrowser (stealth Chromium with C++ patches)",
+    // One bullet, about WHEN. The rest -- humanize, fingerprint seeds, the noisier
+    // markdown, the cache files -- is in the web-search skill, loaded on demand
+    // rather than riding in every system prompt. See the header comment.
     promptGuidelines: [
-      "Use cloak_browse for reCAPTCHA v3, Turnstile, or behavioral detection sites.",
-      "Set humanize=true for best results against behavioral detection.",
-      "The free binary (v146) is baked in; Pro license needed for latest builds.",
-      "If yousoro_browse or camoufox_browse fail, try cloak_browse.",
-      "cloak_browse returns only a preview and caches the COMPLETE output to /tmp: <stem>.txt is the rendered body, <stem>.html is the raw DOM. When it says the output was truncated, read or rg those files instead of re-fetching with a bigger max_chars.",
-      "If cloak_browse output looks like the rendering swallowed something (a table, a form, a value you expected), read the .html file it reported rather than re-fetching with format=\"html\".",
-      "cloak_browse renders markup with regexes because --dump-dom returns a string, not a live page: unlike yousoro_browse it CANNOT drop hidden menus/cookie banners, so its markdown is noisier. Prefer yousoro_browse when both work.",
+      "Prefer yousoro_browse for web pages: it escalates to cloak_browse by itself when a page is blocked. Call cloak_browse directly only for a site known to need reCAPTCHA v3 / Turnstile / behavioral evasion, or when a fetch made some other way came back blocked.",
     ],
     parameters: BrowseParams,
     async execute(_toolCallId, params, signal) {

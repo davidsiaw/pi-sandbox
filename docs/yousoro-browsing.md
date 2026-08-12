@@ -72,7 +72,8 @@ For each fetch it:
 5. **Waits out Cloudflare interstitials** — see [The 403-then-redirect
    pattern](#the-403-then-redirect-pattern) below.
 6. Treats real blocks (403/429/503, or CAPTCHA/verification markers) as
-   `blocked` and retries with backoff up to `max_attempts`.
+   `blocked` and retries with backoff up to `max_attempts` (default 2 — see
+   [Backoff budget](#backoff-budget-one-retry-then-a-different-engine)).
 7. Optionally scrolls for lazy/infinite-scroll feeds and extracts elements by
    CSS selector.
 
@@ -109,8 +110,50 @@ on `CHALLENGE_MARKERS` in `index.ts`.
 
 This is why Stack Overflow, Stack Exchange, GitLab, Bing, WebCrawler, and Yandex
 now succeed from the sandbox: they use fingerprint-gated 403-then-redirect, which
-the masking clears — as opposed to CAPTCHA/managed challenges (PyPI, Mojeek,
+the masking clears — as opposed to CAPTCHA/managed challenges (PyPI search, Mojeek,
 `find.4chan.org`), which don't.
+
+### Backoff budget: one retry, then a different engine
+
+`max_attempts` defaults to **2**, and a block that retrying cannot fix skips the
+backoff entirely.
+
+It used to be 4, which meant a blocked page slept **27 seconds** (6+9+12s) and
+loaded three extra times *before CloakBrowser was tried at all*. That ordering is
+backwards. A second identical request from the same engine, same fingerprint and
+same IP rarely changes a block; a different engine sometimes does. So the cheap
+retry happens once — for a genuinely transient hiccup — and after that the budget
+goes to escalation, which is the thing that might actually work.
+
+On top of that, `looksHopeless()` (in `_shared/stealth.ts`) recognises blocks where
+even one retry is pointless, because they are a verdict on the IP or a puzzle a
+human must solve: Google's `/sorry/`, image CAPTCHAs, ALTCHA-style client
+challenges. Those break out of the loop immediately — 1 load, 0s of sleeping.
+
+It does **not** suppress escalation: `result.blocked` is still set, so CloakBrowser
+still gets its one try. What is skipped is only re-asking the same engine the same
+question. Measured on Google's `/sorry/`: 27s and 3 page loads saved.
+
+### The block that reported success: Google's `/sorry/`
+
+Worth calling out, because it defeated all three signals at once and was found in
+a live drive rather than by a test. Google redirects a datacenter IP to
+`/sorry/index?continue=...`, and that page:
+
+- returns **HTTP 200**, so the `403/429/503` check passes it;
+- takes the **requested URL as its `<title>`**, so nothing looks challenge-like;
+- says *"detected unusual traffic … not a robot"*, which matched none of the
+  `BLOCK_MARKERS` (`"are you a robot"`, `"i'm not a robot"` — close, but not it).
+
+So a fetch of a page whose entire content is the refusal was reported as
+`Blocked: false`, `Status: 200`, and **escalation never fired** — the worst kind
+of failure, since the caller gets a plausible-looking success. `BLOCK_MARKERS` now
+carries Google's own wording (`"detected unusual traffic"`).
+
+The bare phrase `"not a robot"` was deliberately *not* added: a page explaining
+how CAPTCHAs work contains it, and a false block is worse than a missed one — it
+throws away good content *and* spends a CloakBrowser fetch. Both directions are
+asserted in `pa-yousoro-browse/selftest.mjs`.
 
 ### Canvas + audio fingerprint noise
 
@@ -145,7 +188,7 @@ fastest possible fetch.
 | `extract` | — | CSS selector; returns innerText of every match |
 | `extract_attr` | — | also return an attribute per match; use `href` (resolved absolute URL) with `extract="a"` to collect links |
 | `wait_ms` | 2500 | wait after load for JS to settle |
-| `max_attempts` | 4 | retries with backoff when the page looks blocked |
+| `max_attempts` | 2 | one retry with backoff, then escalate; see [Backoff budget](#backoff-budget-one-retry-then-a-different-engine) |
 | `scroll` | 0 | scroll-to-bottom passes (infinite-scroll feeds) |
 | `scroll_wait_ms` | 1500 | wait after each scroll pass |
 | `challenge_wait_ms` | 20000 | max wait for a Cloudflare interstitial to auto-solve and redirect |

@@ -176,6 +176,34 @@ agent's `$HOME` as its cache and litter it with root-owned files.
 
 The prefix is ephemeral, exactly as `sudo apt install` was.
 
+## scripts/patch-update-command.sh (root)
+
+Runs right after `install-pi.sh`. Rewrites the one sentence in pi's "Update
+Available" banner that tells the user to run `pi update`, so it says
+`pa update` instead.
+
+That instruction is a hazard here, in a way that looks like it worked: pi is
+installed globally **in the image**, so `pi update` downloads a new pi into a
+container that is destroyed on exit — the next `pa` is back on the old version and
+the banner returns. The image also pins extensions, baked models, runtimes and the
+patches in this directory, so a pi swapped out underneath them is a combination
+nobody built. Pulling the image is what "update pi" means in the sandbox, and
+`pa update` does that (see [usage.md](usage.md#running-the-agent-the-pa-launcher)).
+
+The replacement reads `PA_UPDATE_COMMAND` at **runtime** (Dockerfile `ENV`,
+default `pa update`), so a differently named launcher can correct the advice
+without a rebuild — same approach as `PI_RESUME_COMMAND` above.
+
+The sibling *"Package updates are available — run `pi update --extensions`"*
+banner is **deliberately left alone**. pi packages install under
+`~/.pi/agent/npm`, which `pa` does not mount, so they are as ephemeral as pi
+itself — but `pa update` would not update them at all, while
+`pi update --extensions` does, for the session you are in. Redirecting it would
+swap imperfect advice for wrong advice.
+
+Only the advice changes: `pi update` still works if run deliberately. Asserts its
+anchor, is idempotent, and **fails the build** if a future pi release moves it.
+
 ## scripts/patch-rag-batch.sh (root)
 
 Runs after `install-rag-model.sh`, once `pa-rag`'s `node_modules` exist. Patches

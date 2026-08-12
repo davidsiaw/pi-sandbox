@@ -53,13 +53,15 @@ function extractArray(name) {
 const helperSource = [
 	extractArray("CHALLENGE_MARKERS"),
 	extractArray("BLOCK_MARKERS"),
+	extractArray("HOPELESS_MARKERS"),
 	extractFn("chromeMajor"),
 	extractFn("yousoroUserAgent"),
 	extractFn("secChUa"),
 	extractFn("makeYousoroInitScript"),
 	extractFn("looksChallenge"),
 	extractFn("looksBlocked"),
-	"globalThis.__H = { chromeMajor, yousoroUserAgent, secChUa, makeYousoroInitScript, looksChallenge, looksBlocked };",
+	extractFn("looksHopeless"),
+	"globalThis.__H = { chromeMajor, yousoroUserAgent, secChUa, makeYousoroInitScript, looksChallenge, looksBlocked, looksHopeless };",
 ]
 	.join("\n")
 	// The shared module exports these; `export` is illegal in an eval'd script,
@@ -96,6 +98,26 @@ check(
 check("looksBlocked true on 403", H.looksBlocked(403, "anything"));
 check("looksBlocked true on CAPTCHA text", H.looksBlocked(200, "Verification required. I'm not a robot"));
 check("looksBlocked false on normal 200", !H.looksBlocked(200, "Welcome to the site"));
+
+// Google's /sorry/ page: served as HTTP 200, titled with the requested URL, and
+// worded "not a robot" rather than any of the older CAPTCHA phrases. It slipped
+// through every check and was reported as a successful fetch of a page whose only
+// content is the refusal, so escalation never fired. Caught in a live drive.
+check(
+	"looksBlocked true on Google's /sorry/ interstitial (HTTP 200)",
+	H.looksBlocked(
+		200,
+		"About this page\n\nOur systems have detected unusual traffic from your computer network. This page checks to see if it's really you sending the requests, and not a robot.",
+	),
+	"Google's rate-limit page would be reported as real content",
+);
+// The narrow marker must not swallow pages that merely discuss bot detection: a
+// false block discards a good page AND burns a CloakBrowser fetch.
+check(
+	"looksBlocked false on an article about CAPTCHAs",
+	!H.looksBlocked(200, "How reCAPTCHA decides whether you are a robot: a technical explainer"),
+	"BLOCK_MARKERS got too broad — legitimate pages will be thrown away",
+);
 
 // --- (1b) Output caching: the context-blowout guard ------------------------
 // ../_shared/cache.ts (shared with pa-cloakbrowser) is imported directly
@@ -358,6 +380,30 @@ try {
 	check("blocked+escalate tells the agent to stop retrying", /Do not retry either one/.test(idx));
 	check("blocked+no-escalate names cloak_browse explicitly", /retry this URL with the cloak_browse tool/.test(idx));
 	check("attempts counter is clamped (loop runs one past)", /Math\.min\(attempt, opts\.maxAttempts\)/.test(idx));
+
+// One backoff, then escalate. This was 4 attempts (27s of sleeping: 6+9+12s)
+// before CloakBrowser was tried at all -- the wrong order, since a second
+// identical request rarely changes a block but a different engine sometimes does.
+check(
+	"max_attempts defaults to 2, so only ONE backoff happens before escalation",
+	/params\.max_attempts \?\? 2/.test(idx),
+	"the slow 4-attempt backoff is back; a blocked page costs ~27s again",
+);
+
+// A block retrying cannot fix must not sleep at all. Escalation still runs --
+// what is skipped is only re-asking the SAME engine the same question.
+check(
+	"a hopeless block breaks out instead of backing off",
+	/looksHopeless\(vtext\)[\s\S]{0,200}?break;/.test(idx),
+	"Google's /sorry/ will burn the backoff again for an identical page",
+);
+check("looksHopeless true on Google's /sorry/", H.looksHopeless("Our systems have detected unusual traffic from your computer network."));
+check("looksHopeless true on an image CAPTCHA", H.looksHopeless("Enter the characters seen in the image"));
+check(
+	"looksHopeless false on a transient rate-limit, which backing off can fix",
+	!H.looksHopeless("Too many requests. Please try again later."),
+	"transient 429s would stop being retried",
+);
 } finally {
 	await browser.close();
 }

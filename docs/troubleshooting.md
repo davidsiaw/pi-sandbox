@@ -172,9 +172,15 @@ If **only the tailnet name** fails, the launcher's MagicDNS snapshot missed it.
 - `tailscale status --json` must report `MagicDNSSuffix` (MagicDNS enabled).
 
 If **`<env>.<suffix>` (the heighliner app) fails** but everything else resolves,
-the `heighliner-dns` container was down when `pa` started, so its resolver was
+heighliner's DNS container was down when `pa` started, so its resolver was
 deliberately not wired up. Start it and restart `pa`. `pa` warns on the host
 terminal if that container is running but has no IPv4 on the spice network.
+
+It is called `heighliner-dns`, or `kaiser-dns` on an install predating the
+rename. `pa` does not guess: `sp up` asks heighliner and labels the spice
+container with the answer. `sp status` prints which one is in use. A spice server
+started by an older `sp` carries no labels, so `pa` assumes the heighliner names
+— if that server is on `kaiser_net`, `sp down && sp up` fixes it.
 
 Older versions passed `--dns 100.100.100.100` and papered over the fallout with
 a `sudo` rewrite of `/etc/resolv.conf` in the entrypoint. If you are carrying a

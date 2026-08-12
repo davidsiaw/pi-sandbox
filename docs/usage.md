@@ -15,6 +15,35 @@ pa
 That starts the pi agent inside the container, with your project directory as
 the working directory.
 
+Every argument goes straight through to pi, with one exception:
+
+```bash
+pa update    # pull a newer sandbox image
+```
+
+**Launching does not pull.** The image is several gigabytes, and a registry
+round-trip before every session buys nothing most of the time — yesterday's
+sandbox runs today's project perfectly well. Upgrading is a decision, and
+`update` is how you make it. Docker still pulls on the very first run, when there
+is no local image to reuse.
+
+This shadows pi's own `update` subcommand on purpose. Inside the sandbox that is
+the wrong tool: pi is baked into the image and the container is destroyed on exit,
+so `pi update` would spend a download upgrading something that does not outlive
+the session. Here, pulling the image *is* updating pi — along with the runtimes,
+the skills and the extensions that ship with it.
+
+pi's own `update` becomes unreachable as a `pa` argument — pi rejects a `--`
+separator, so there is no pass-through spelling. If you do want it (to refresh
+model catalogs, say), have the agent run `pi update --models` in the sandbox. The
+result lasts until the container exits, which is the point being made above.
+
+For the same reason, pi's own "Update Available" banner is patched in the image to
+say `pa update` rather than `pi update` — following its original advice would
+upgrade a container that is about to be thrown away, and the banner would return
+on the next launch. See
+[scripts.md](scripts.md#scriptspatch-update-commandsh-root).
+
 ## What gets mounted
 
 | Host path                          | Container path                                   | Mode | Why |
@@ -109,7 +138,16 @@ runs its own dnsmasq so `<env>.<suffix>` resolves to its nginx proxy. That one
 **does** need `--dns`: the suffix is server config and the env name only exists
 after `heighliner init`, so no static hosts entry could cover it.
 
-It is wired up only when the `heighliner-dns` container is **running** *and*
+Neither the network nor the resolver's name is hardcoded. Heighliner used to be
+called [kaiser](https://github.com/degica/kaiser) and keeps using a `~/.kaiser`
+config when that is the only one present, where they are called `kaiser_net` and
+`kaiser-dns`. So `sp up` asks heighliner what they are and stamps the answer onto
+the spice container as labels; `pa` reads them from the `docker inspect` it
+already makes. A server started by an older `sp` has no labels, and `pa` assumes
+the heighliner names — which is right, because that is the only network such a
+server could have joined.
+
+It is wired up only when heighliner's DNS container is **running** *and*
 reports a valid IPv4 on that network — `docker inspect` answers `<no value>`
 when the network key is missing, and `docker run --dns "<no value>"` fails with
 *invalid argument* before the agent starts. A public resolver is passed as a
@@ -148,6 +186,7 @@ Set these when invoking `pa`:
 | `MISE_VOLUME`   | `pi-sandbox-mise`                | name of the runtime cache volume |
 | `NO_MOUNT_SYSTEM` | `0`                            | `1` = do **not** mount a host `SYSTEM.md` (which would replace pi's default system prompt) |
 | `PI_TOOL_EXECUTION` | `sequential`                 | tool-call strategy. `sequential` runs one tool at a time; `parallel` restores upstream concurrent fan-out. Any other value falls back to `parallel`. |
+| `PA_UPDATE_COMMAND` | `pa update`                  | what pi's "Update Available" banner tells the user to run. Set it if your launcher is named something else (see [scripts.md](scripts.md#scriptspatch-update-commandsh-root)) |
 | `PA_FALLBACK_DNS` | `1.1.1.1`                      | second DNS forwarder, used **only** when heighliner's resolver is wired up (see [Networking](#networking-dns-and-tailnet-hostnames)) |
 
 Examples:

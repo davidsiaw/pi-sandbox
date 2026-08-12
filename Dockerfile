@@ -235,6 +235,14 @@ ENV PI_TOOL_EXECUTION=sequential
 COPY scripts/install-pi.sh /tmp/install-pi.sh
 RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 
+# Make pi's "new version available" banner say `pa update` instead of `pi update`.
+# In here, `pi update` upgrades a container that is destroyed on exit, so the
+# banner comes back next launch; pulling the image is what updating pi means.
+# Read by the patch at runtime, so a differently named launcher can override it.
+ENV PA_UPDATE_COMMAND="pa update"
+COPY scripts/patch-update-command.sh /tmp/patch-update-command.sh
+RUN bash /tmp/patch-update-command.sh && rm /tmp/patch-update-command.sh
+
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["bash", "-l"]

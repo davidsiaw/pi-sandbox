@@ -268,6 +268,20 @@ run 'echo "$PI_RESUME_COMMAND"' | grep -q '^pa$' \
 run 'grep -q "process.env.PI_RESUME_COMMAND || APP_NAME" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo PATCHED' | grep -q PATCHED \
   && pass "resume-command patch applied to pi" || fail "resume-command patch missing"
 
+# pi's "Update Available" banner must say `pa update`. Following `pi update` in
+# here upgrades a container that is destroyed on exit, so the banner returns next
+# launch; pulling the image is what updating pi means.
+run 'echo "$PA_UPDATE_COMMAND"' | grep -q '^pa update$' \
+  && pass "PA_UPDATE_COMMAND='pa update' in image" || fail "PA_UPDATE_COMMAND not set to 'pa update'"
+run 'grep -q "process.env.PA_UPDATE_COMMAND" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo PATCHED' | grep -q PATCHED \
+  && pass "update-command patch applied to pi" || fail "update-command patch missing"
+
+# The sibling extensions banner is deliberately NOT redirected: pi packages live
+# under ~/.pi/agent/npm and `pa update` would not touch them, so `pi update
+# --extensions` remains the best advice available.
+run 'grep -q "APP_NAME} update --extensions" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo INTACT' | grep -q INTACT \
+  && pass "extensions-update banner left alone" || fail "extensions banner was rewritten or moved"
+
 # Tool calls must be serialized. pi's agent loop supports it but the coding agent
 # never sets toolExecution, so install-pi.sh patches agent.js to read
 # PI_TOOL_EXECUTION and the image sets it to "sequential".

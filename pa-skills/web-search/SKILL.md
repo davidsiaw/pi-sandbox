@@ -44,15 +44,6 @@ trigger_keywords:
 auto_load: true
 ---
 
-# CRITICAL AUTOMATION RULE:
-# If the user's prompt matches ANY of the trigger_keywords above, 
-# you MUST execute `read /home/david/programs/pi-sandbox/pa-skills/web-search/SKILL.md` BEFORE 
-# attempting any web search or browsing action.
-# The sandbox IP blocks standard engines (Google/Bing) and requires 
-# specific fallback engines (DuckDuckGo HTML, Yahoo) and BFS link-harvesting 
-# strategies defined in this file.
-# Failure to read this file first is a critical error.
-
 # web-search
 
 （此言雖文言，然答用戶當以用戶所用之語。）
@@ -80,7 +71,7 @@ auto_load: true
 - `extract_attr`——每中者亦返之屬性。**以 `"href"` 配 `extract="a"` 集鏈**（返解析之絕對 URL）。
 - `scroll` ／ `scroll_wait_ms`——為懶載／無限捲之 feed（Reddit、Twitter 鏡）捲之。feed 始以 `scroll=5`。
 - `wait_ms`——JS 重之頁多候（試 `3000`+）。
-- `max_attempts`——遭擋則退避重試（默 4；勿改）。
+- `max_attempts`——遭擋則退避重試（默 **2**：一退避而已，即升 cloak；勿改）。
 - `max_chars`——內聯頁文之預算（默 8000）。`max_items`——內聯 `extract` 列之預算（默 50）。
 - `format`——`"markdown"`（默）／`"text"`／`"html"`。見下。
 
@@ -200,9 +191,12 @@ cloak_browse url="https://example.com"
 **二者皆可時，先取 `yousoro_browse`**；唯站需 reCAPTCHA v3／行為檢測者，乃用 cloak。
 
 **注意**：
-- 匣中預備者為 **免費版 v146**（可能漸舊）。若需最新版及 0.9 reCAPTCHA，設 `CLOAKBROWSER_LICENSE_KEY`。
-- 若 `yousoro_browse` 或 `camoufox_browse` 失敗，試 `cloak_browse` 為最後手段。
-- **行為檢測必啟 `humanize=true`**，否則仍可能被識破。
+- `yousoro_browse` 遭擋則**自升** `cloak_browse`，不待汝召（見上節）。
+  故手召此具者，唯二時：一曰**已知**其站需 reCAPTCHA v3／Turnstile／行為檢測；
+  二曰以他法取頁而遭擋。餘則召 `yousoro_browse` 足矣，勿自串二具。
+- **行為檢測必啟 `humanize=true`**（默即真），否則仍可能被識破。
+- 匣中預備者為 **免費版 v146**，非 Pro。故 reCAPTCHA v3 未必得手，不得亦常事，
+  勿以此為己過，亦**勿告用戶購 license**——匣中無 Pro 之途，言之徒擾。不過則另尋一源。
 
 ## 研之環（有界 BFS）
 
@@ -224,8 +218,11 @@ cloak_browse url="https://example.com"
   解 `uddg` 參之編碼得真的。
 - ✅ **Yahoo**——`https://search.yahoo.com/search?p=...`——佳，返**直**（未裹）之果 URL 及豐 snippet。
   雖曰「Powered by Bing」，然 Bing 自身不通時此仍通。
-- ⚠️ **Google**——`https://www.google.com/search?q=...`——通，然匣之 IP 令其返**日文** SERP、鏈裹 tracker。
-  綴 `&hl=en&gl=us` 以強英文。真 URL 埋於 `ved=`／`sca_esv=` 參，或為 `#:~:text=` 片段。
+- ❌ **Google**——`https://www.google.com/search?q=...`——**今多轉 `/sorry/` 之擋頁**
+  （「detected unusual traffic」，HTTP **200**，題為所求之 URL，故昔之檢查不能識，
+  誤報為得其頁；已修，今正報 `Blocked: true` 而自升 cloak）。
+  匣之 IP 乃機房之 IP，Google 於此最嚴。**勿以 Google 為首選**，取 DuckDuckGo／Yahoo。
+  偶通之時，其 SERP 亦為日文、鏈裹 tracker（綴 `&hl=en&gl=us` 稍可）。
 - ✅ **Bing**——`https://www.bing.com/search?q=...`——**今通**（yousoro_browse 之指紋掩護既備 Google Chrome UA、真 GPU，昔之 CAPTCHA 不復現）。返直 URL、豐 snippet。
 
 **舊牌／替代元搜索（多已轉為 metasearch 面子，非自爬）：**
@@ -295,23 +292,22 @@ cloak_browse url="https://example.com"
 | `yousoro_browse` | Chromium (Playwright + JS patches) | 快速、輕量、處理 Cloudflare 403-then-redirect | 一般瀏覽、Cloudflare 挑戰頁 |
 | `screenshot_url` | Chromium（同上之掩飾） | JS 盡行而截其貌，書 PNG 於檔（不返 base64） | 覷 UI、驗版式、局中之頁 |
 | `detect_ui_elements` | ONNX (onnxruntime-node) | 求 UI 諸元之框（x,y,w,h），俾裁而察 | 定位、裁片、驗佈局 |
-| `camoufox_browse` | Firefox (Camoufox C++ patches) | C++ 級別指紋欺騙、不同指紋配置文件 | DataDome, PerimeterX, Turnstile |
 | `cloak_browse` | Chromium (CloakBrowser C++ patches) | **reCAPTCHA v3 (0.9 分)**, TLS 指紋偽造，行為模擬 | reCAPTCHA v3, Turnstile, 行為檢測 |
 
 **選擇指南：**
 - **一般網站 / Cloudflare**: `yousoro_browse` (最快)
-- **難搞的 WAF (DataDome, PerimeterX)**: `camoufox_browse` (Firefox 不同路徑)
+- **難搞的 WAF (DataDome, PerimeterX)**: `cloak_browse`。此匣無 Firefox 之途，故無他引擎可換；不過則另尋一源。
 - **reCAPTCHA v3 / Turnstile / 行為檢測**: `cloak_browse` (唯一能過 reCAPTCHA v3 的免費方案)
-- **如果一個工具失敗**: 嘗試另一個 (不同引擎/指紋配置文件)
+- **一具既敗**: 此匣唯 Chromium 二途（yousoro／cloak），且前者已自升後者。二皆敗則**另尋一源**，勿更端。
 
-通則：多數 Cloudflare「Just a moment」瞬擋今由 yousoro_browse 自過（Google Chrome 指紋、真 GPU、候其自解）。此類站行「**先 403 後轉**」之關——首返 403 挑戰頁，指紋過則轉真頁；故初之 403 非真擋，工具候其自解，過則以 200 論。然**圖形 CAPTCHA（PyPI、Mojeek）與最硬之 managed challenge（find.4chan.org）仍不得過**——此非指紋之事，乃須解謎或真 residential IP。若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
+通則：多數 Cloudflare「Just a moment」瞬擋今由 yousoro_browse 自過（Google Chrome 指紋、真 GPU、候其自解）。此類站行「**先 403 後轉**」之關——首返 403 挑戰頁，指紋過則轉真頁；故初之 403 非真擋，工具候其自解，過則以 200 論。然**圖形 CAPTCHA（Mojeek）、Google 之 `/sorry/` 速率擋、與最硬之 managed challenge（find.4chan.org）仍不得過**——此非指紋之事，乃須解謎或真 residential IP。若一源重試後仍 `blocked: true`，則另尋一源，勿捶之。
 
 **今 `yousoro_browse` 遭擋則自升 CloakBrowser**（見上），故所見之 `Blocked: true`，乃二引擎皆敗之果，非未試最強者也。
 
 **重難點突破：**
-- **reCAPTCHA v3**: 僅 `cloak_browse` 能穩定通過 (0.9 分，Pro 版)。其他工具通常失敗。
+- **reCAPTCHA v3**: 唯 `cloak_browse` 可望過之。匣中乃免費版 v146，非 Pro，故未必得手。
 - **Cloudflare Turnstile**: `yousoro_browse` (403-then-redirect 處理), `cloak_browse` (C++ 級別) 均可。
-- **DataDome / PerimeterX**: `camoufox_browse` (Firefox C++ 級別) 通常優於 Chromium 方案。
+- **DataDome / PerimeterX**: 試 `cloak_browse`；此二者最硬，常不得過，宜早改源。
 - **行為檢測 (Mouse/Keyboard)**: `cloak_browse` 的 `humanize=true` 參數模擬真實人類行為。
 
 2. **讀且集。**每頁：

@@ -2,7 +2,13 @@
 
 ## Overview
 
-The `pi-sandbox` image now includes **CloakBrowser** (free v146 binary) as a third browsing option alongside `yousoro_browse` and `camoufox_browse`.
+The `pi-sandbox` image includes **CloakBrowser** (free v146 binary) as the second browsing option alongside `yousoro_browse`.
+
+> **There is no `camoufox_browse` in this image.** Earlier drafts of this page and
+> of the web-search skill named one; nothing registers it. The two browsing tools
+> are `yousoro_browse` (Chromium + Playwright, the default) and `cloak_browse`.
+> `yousoro_browse` escalates to `cloak_browse` on its own when a page is blocked,
+> so chaining them by hand is not needed.
 
 ## What is CloakBrowser?
 
@@ -109,7 +115,6 @@ piece of work.
 | Tool | Engine | Strengths | Best For |
 |------|--------|-----------|----------|
 | `yousoro_browse` | Chromium (JS patches) | Fast, lightweight, Cloudflare 403-then-redirect | General browsing, Cloudflare challenges |
-| `camoufox_browse` | Firefox (C++ patches) | C++ fingerprint spoofing, different profile | DataDome, PerimeterX, Turnstile |
 | `cloak_browse` | Chromium (C++ patches) | **reCAPTCHA v3**, TLS spoofing, behavioral | reCAPTCHA v3, Turnstile, behavioral detection |
 
 ## You usually do not have to ask for it
@@ -139,9 +144,16 @@ Use `cloak_browse` when:
 
 1. **reCAPTCHA v3 is present**: Only CloakBrowser can reliably pass (with Pro version for 0.9 score)
 2. **Behavioral detection**: The `humanize=true` flag simulates real mouse/keyboard patterns
-3. **Other tools fail**: Try as a last resort when `yousoro_browse` and `camoufox_browse` are blocked
+3. **`yousoro_browse` is blocked**: it escalates here automatically, so this is
+   usually not a call you make yourself
 
 ## Pro Version (Optional)
+
+This is a **host-side** decision, and deliberately not something the agent is told
+about: the licence note used to sit in `cloak_browse`'s prompt guidelines, where it
+decided nothing at the call site (there is no Pro binary in the image to reach for)
+and only invited the agent to suggest a purchase when a fetch failed. The skill now
+tells it that a reCAPTCHA v3 miss is normal and to switch sources instead.
 
 The free binary (v146) works for most sites. For the latest builds and guaranteed reCAPTCHA v3 0.9 score, you can provide a Pro license:
 
@@ -263,7 +275,7 @@ sh build.sh
 
 The free binary (v146) may not pass the latest reCAPTCHA v3. Consider:
 1. Using Pro version with license key
-2. Trying `camoufox_browse` as an alternative (Firefox-based)
+2. Switching to a different source — there is no third engine to fall back to
 3. Adding a residential proxy (CloakBrowser supports `proxy` parameter)
 
 ## Files Modified
