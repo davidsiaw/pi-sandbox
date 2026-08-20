@@ -188,6 +188,7 @@ Set these when invoking `pa`:
 | `PI_TOOL_EXECUTION` | `sequential`                 | tool-call strategy. `sequential` runs one tool at a time; `parallel` restores upstream concurrent fan-out. Any other value falls back to `parallel`. |
 | `PA_UPDATE_COMMAND` | `pa update`                  | what pi's "Update Available" banner tells the user to run. Set it if your launcher is named something else (see [scripts.md](scripts.md#scriptspatch-update-commandsh-root)) |
 | `PA_FALLBACK_DNS` | `1.1.1.1`                      | second DNS forwarder, used **only** when heighliner's resolver is wired up (see [Networking](#networking-dns-and-tailnet-hostnames)) |
+| `PA_PACKAGES`   | *(empty)*                        | `:`- or `,`-separated host directories, each a pi package checkout, mounted read-only and loaded for the run (see [Private extensions and skills](#private-extensions-and-skills)) |
 
 Examples:
 
@@ -323,6 +324,76 @@ MY_OTHER_KEY=another-item:password:Work
 Both are additive; the openv source overrides `pa.env` for the same var (Docker
 keeps the last `-e`). Neither mounts a secret file into the container, and no
 secret is baked into the image.
+
+## Private extensions and skills
+
+A public package installs normally: put `npm:...` or an `https://` git source in
+`packages` in your host `settings.json` and it works in the sandbox, because
+neither needs credentials.
+
+A **private** one does not, and deliberately so. A `packages` entry like
+`git:git@github.com:acme/private-pi-ext` makes pi clone the repo at startup, over
+ssh — and the sandbox mounts no ssh keys and forwards no agent socket. That entry
+fails, loudly, every launch. It is not going to be rescued: cloning a repo into a
+container that is deleted on exit is the wrong operation. If you need to *change*
+the package, `cd` into its checkout and run `pa` there, like any other project.
+
+To *use* one, hand `pa` the checkout you already have:
+
+```bash
+PA_PACKAGES=~/work/acme-private-pi-ext pa
+```
+
+Or permanently, one path per line (`#` comments and blanks ignored):
+
+```
+# ~/.pi/agent/pa.packages
+~/work/acme-private-pi-ext
+~/work/data-eng-pi-ext
+```
+
+Both sources are additive. `PA_PACKAGES` splits on `:` (like `PATH`) and `,`
+(like `PA_ADD_HOST`), so a path containing either character has to go in
+`pa.packages`. `~` is expanded. A path that is not a directory is skipped with a
+warning.
+
+For each entry `pa`:
+
+- bind-mounts it **read-only** at `/opt/pa/local-packages/<basename>-<n>`, and
+- passes `pi -e /opt/pa/local-packages/<basename>-<n>`.
+
+One flag is enough for a whole package. pi resolves a local path through the same
+package resolver as an installed package, so it loads that directory's
+**extensions, skills, prompt templates and themes** — honouring the `pi` key in
+its `package.json`, or the conventional `extensions/` + `skills/` directories if
+there is no manifest:
+
+```json
+{
+  "name": "@acme/private-pi-ext",
+  "private": true,
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./extensions"], "skills": ["./skills"] }
+}
+```
+
+Nothing is copied into `~/.pi/agent/skills` or `~/.pi/agent/extensions`, so your
+host pi config stays exactly as clean as it was — which is the point: the private
+team packages are not global to your machine, they are a per-launch decision.
+Loading is `-e`, i.e. temporary scope: nothing is written to the container's
+`settings.json` either.
+
+Two consequences of the read-only mount, both intended:
+
+- The agent cannot modify your checkout. Run `pa` inside the checkout to work on
+  it.
+- pi does not `npm install` local package sources (that is upstream behaviour,
+  not a sandbox restriction), and the mount is not writable, so a package with
+  real runtime dependencies needs its `node_modules` present **on the host**.
+
+The index suffix (`-0`, `-1`, …) is there because two checkouts can share a
+basename — a fork and its upstream. A visibly ugly path beats one package
+silently shadowing the other.
 
 ## Baked skills & extensions
 

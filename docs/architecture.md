@@ -137,7 +137,10 @@ The current model borrows the OpenShift pattern:
 - **Everything installed is root-owned and read-only** — node, pi, playwright,
   chromium, the mise binary, all system libs.
 - **Only three things are writable:** the world-writable `HOME`, the
-  bind-mounted project directory, and the mise cache volume.
+  bind-mounted project directory, and the mise cache volume. Host package
+  checkouts passed via `PA_PACKAGES` are mounted read-only at
+  `/opt/pa/local-packages/<name>-<n>` and are explicitly *not* writable (see
+  [usage.md](usage.md#private-extensions-and-skills)).
 - **The container runs as the host uid** via `--user $(id -u):$(id -g)` in the
   launcher, and the entrypoint gives that uid a valid identity.
 

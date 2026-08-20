@@ -192,3 +192,31 @@ container — remove it.
 By default `pa` mounts `~/.pi/agent/auth.json` read-only. If you ran with
 `MOUNT_AUTH=0`, the sandbox has no host credentials and needs its own auth. Drop
 `MOUNT_AUTH=0` (or provide auth inside the sandbox) to fix.
+
+## A `git@github.com` package works in `pi` but fails in `pa`
+
+Symptom, at every launch:
+
+```
+Installing git:git@github.com:acme/private-pi-ext...
+Permission denied (publickey).
+fatal: Could not read from remote repository.
+```
+
+Cause: `packages` in `settings.json` is mounted in, and pi installs a missing
+package at startup by cloning it. On the host that works — pi uses your ssh keys.
+The sandbox mounts **no ssh keys and no agent socket**, by design, so the clone
+cannot authenticate.
+
+This is not going to be fixed by forwarding credentials. Cloning a private repo
+into a container that is deleted on exit is the wrong operation. Instead:
+
+- **To use the package:** point `PA_PACKAGES` (or `~/.pi/agent/pa.packages`) at
+  the checkout you already have. It is bind-mounted read-only and loaded with
+  `-e`, which pulls in its extensions *and* skills. See
+  [usage.md](usage.md#private-extensions-and-skills).
+- **To change the package:** `cd` into its checkout and run `pa` there. It is a
+  project like any other, and git over ssh is the host's job.
+
+Public sources (`npm:`, `https://` git) need no credentials and keep working
+unchanged.

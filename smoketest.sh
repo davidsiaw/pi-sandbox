@@ -332,6 +332,70 @@ else
   pass "baked extension loads (no load error)"
 fi
 
+# PA_PACKAGES: a host checkout of a PRIVATE pi package, bind-mounted read-only
+# and loaded with `-e`. This is how private extensions/skills reach the sandbox,
+# because a git:git@github.com: package in settings.json cannot work in here --
+# there are no ssh keys, on purpose.
+#
+# The launcher builds the mount and the flag; this checks the half that is a
+# property of the IMAGE: that pi, running as an arbitrary uid, resolves such a
+# directory as a package and picks up BOTH its extensions/ and its skills/.
+# `-e` goes through the same package resolver as an installed package, so one
+# flag covers all four resource types -- that behaviour is what would silently
+# regress on a pi upgrade, hence a real check rather than a file-exists test.
+pkgdir="$(mktemp -d)"
+mkdir -p "$pkgdir/extensions" "$pkgdir/skills/pa-smoke-private"
+cat > "$pkgdir/package.json" <<'EOF'
+{ "name": "pa-smoke-private", "private": true, "keywords": ["pi-package"],
+  "pi": { "extensions": ["./extensions"], "skills": ["./skills"] } }
+EOF
+cat > "$pkgdir/extensions/probe.ts" <<'EOF'
+export default function ext(pi: any) {
+  pi.on?.("before_agent_start", (event: any) => {
+    const skills = event?.systemPromptOptions?.skills ?? [];
+    console.error("PA_PRIVATE_SKILLS=" + skills.map((s: any) => s?.name ?? s?.path).join(","));
+  });
+  return { name: "pa-smoke-private-ext" };
+}
+EOF
+printf -- '---\nname: pa-smoke-private\ndescription: smoketest private skill\n---\n\nbody\n' \
+  > "$pkgdir/skills/pa-smoke-private/SKILL.md"
+
+run_pkg() {
+  docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+    -v "${VOLUME}:${MISE_MOUNT}" \
+    -v "$pkgdir:/opt/pa/local-packages/pa-smoke-private-0:ro" \
+    "$IMAGE_TAG" bash -lc "$1" 2>&1
+}
+
+run_pkg 'test -f /opt/pa/local-packages/pa-smoke-private-0/package.json && echo PKG_MOUNTED' \
+  | grep -q PKG_MOUNTED \
+  && pass "PA_PACKAGES-style mount visible at /opt/pa/local-packages/<name>" \
+  || fail "read-only package mount not visible in the container"
+
+# The host checkout is the user's, not the agent's: the mount must stay ro.
+run_pkg 'touch /opt/pa/local-packages/pa-smoke-private-0/nope 2>&1 || echo RO_OK' | grep -q RO_OK \
+  && pass "mounted host package is read-only" \
+  || fail "agent can write into the host package checkout"
+
+out="$(run_pkg 'pi -e /opt/pa/local-packages/pa-smoke-private-0 -p hi 2>&1 | head -30')"
+if echo "$out" | grep -qi 'Failed to load extension'; then
+  fail "mounted private package extension fails to load: $(echo "$out" | head -3)"
+else
+  pass "mounted private package extension loads (no load error)"
+fi
+# No model auth in the smoketest, so before_agent_start may never fire and the
+# probe line may be absent. Only a WRONG skill set is a failure; a missing line
+# is reported as a note so nobody reads it as a pass.
+if echo "$out" | grep -q 'PA_PRIVATE_SKILLS='; then
+  echo "$out" | grep -q 'PA_PRIVATE_SKILLS=.*pa-smoke-private' \
+    && pass "skills/ of a mounted package load from one -e flag" \
+    || fail "package skill not loaded by -e: $(echo "$out" | grep -o 'PA_PRIVATE_SKILLS=.*')"
+else
+  note "skill-load probe needs model auth to fire; extension-load path checked only"
+fi
+rm -rf "$pkgdir"
+
 # pa-rag's upstream loader must survive being run THROUGH JITI, which is how pi
 # loads extensions -- not through plain node, which is how the selftests run.
 #
