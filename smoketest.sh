@@ -14,6 +14,8 @@ note() { printf '  \033[36mNOTE\033[0m  %s\n' "$1"; }
 FAILED=0
 
 cleanup() {
+  # pkgdir now lives in the repo, so an early exit would leave litter behind.
+  if [ -n "${pkgdir:-}" ]; then rm -rf "$pkgdir"; fi
   if [ "${KEEP:-0}" != "1" ]; then
     docker volume rm "$VOLUME" >/dev/null 2>&1 || true
   fi
@@ -343,7 +345,12 @@ fi
 # `-e` goes through the same package resolver as an installed package, so one
 # flag covers all four resource types -- that behaviour is what would silently
 # regress on a pi upgrade, hence a real check rather than a file-exists test.
-pkgdir="$(mktemp -d)"
+# Under the CWD, not mktemp -d: the only other host bind mount in this suite
+# uses $(pwd) and works, while /var/folders (macOS TMPDIR) is outside Docker
+# Desktop's shared paths -- an unshared source is mounted as an EMPTY dir, which
+# looks exactly like "mount not visible" + "Cannot find module".
+pkgdir="$(pwd)/.pa-smoke-pkg.$$"
+rm -rf "$pkgdir"
 mkdir -p "$pkgdir/extensions" "$pkgdir/skills/pa-smoke-private"
 cat > "$pkgdir/package.json" <<'EOF'
 { "name": "pa-smoke-private", "private": true, "keywords": ["pi-package"],
@@ -361,6 +368,12 @@ EOF
 printf -- '---\nname: pa-smoke-private\ndescription: smoketest private skill\n---\n\nbody\n' \
   > "$pkgdir/skills/pa-smoke-private/SKILL.md"
 
+# mktemp -d is mode 700 owned by the HOST user; the container runs as an
+# arbitrary uid (UID_TEST) which then cannot even traverse the mount. Without
+# this, both mount checks fail with EACCES and the ro check passes for the wrong
+# reason. A real host checkout is world-readable, so this matches reality.
+chmod -R a+rX "$pkgdir"
+
 run_pkg() {
   docker run --rm --user "${UID_TEST}:${UID_TEST}" \
     -v "${VOLUME}:${MISE_MOUNT}" \
@@ -368,15 +381,22 @@ run_pkg() {
     "$IMAGE_TAG" bash -lc "$1" 2>&1
 }
 
-run_pkg 'test -f /opt/pa/local-packages/pa-smoke-private-0/package.json && echo PKG_MOUNTED' \
-  | grep -q PKG_MOUNTED \
-  && pass "PA_PACKAGES-style mount visible at /opt/pa/local-packages/<name>" \
-  || fail "read-only package mount not visible in the container"
+if run_pkg 'test -f /opt/pa/local-packages/pa-smoke-private-0/package.json && echo PKG_MOUNTED' \
+  | grep -q PKG_MOUNTED; then
+  pass "PA_PACKAGES-style mount visible at /opt/pa/local-packages/<name>"
+else
+  # Empty listing => source path not shared with the docker VM; entries present
+  # but unreadable => permissions. Distinguishing them by hand costs a run.
+  fail "read-only package mount not visible in the container: $(run_pkg 'ls -ldn /opt/pa/local-packages/pa-smoke-private-0; ls -an /opt/pa/local-packages/pa-smoke-private-0' | tr '\n' ' ')"
+fi
 
 # The host checkout is the user's, not the agent's: the mount must stay ro.
-run_pkg 'touch /opt/pa/local-packages/pa-smoke-private-0/nope 2>&1 || echo RO_OK' | grep -q RO_OK \
+# grep the REASON, not just the failure: an unreadable mount also makes touch
+# fail, which used to make this pass while the two real checks failed.
+run_pkg 'touch /opt/pa/local-packages/pa-smoke-private-0/nope 2>&1 || true' \
+  | grep -qi 'read-only file system' \
   && pass "mounted host package is read-only" \
-  || fail "agent can write into the host package checkout"
+  || fail "host package mount not read-only (or write failed for another reason)"
 
 out="$(run_pkg 'pi -e /opt/pa/local-packages/pa-smoke-private-0 -p hi 2>&1 | head -30')"
 if echo "$out" | grep -qi 'Failed to load extension'; then
