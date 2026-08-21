@@ -394,7 +394,7 @@ try {
 		const rr2 = await byName.pdf_render.execute("t10", { path: scanned, pages: "2" }, null, () => {}, { cwd: SANDBOX });
 		const rtxt = rr2.content.map((c) => c.text).join("\n");
 		check("pdf_render returns a PNG path", /\.png\b/.test(rtxt), rtxt);
-		check("pdf_render points at inspect_image", /inspect_image/.test(rtxt));
+		check("pdf_render points at read first, inspect_image as fallback", /\bread\b[\s\S]*inspect_image/.test(rtxt), rtxt);
 		check("pdf_render details list rendered pages", rr2.details?.pagesRendered?.join(",") === "2");
 
 		// rendering a text page should warn that pdf_read is cheaper

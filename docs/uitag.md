@@ -22,9 +22,15 @@ detect_ui_elements image="image.png" min_confidence=0.6
   -> #12  Input_Elements  0.768  x=327 y=618 w=186 h=52
 
 # crop to that box, then:
-inspect_image image="crop.png" prompt="What control is this?"
-  -> "Checkbox with the text 'Checkbox' next to it."
+read path="crop.png"
+  -> the 186x52 crop, attached: a checkbox labelled "Checkbox".
 ```
+
+That last step is `read` because pi's `read` attaches an image directly to the
+conversation whenever the active model declares `input: ["image"]`. If it instead
+reports `[Current model does not support images...]`, the model is text-only —
+then use `inspect_image image="crop.png" prompt="What control is this?"`, which
+routes the crop to a separate vision model from the registry.
 
 That is the intended workflow: **detect → crop → inspect**. The tool's whole job
 is producing numbers you can crop with, so coordinates are integers in the
@@ -66,8 +72,8 @@ machine-readably in the tool result's `details.detections`.
 
 That is the model's whole vocabulary. A checkbox, a text field and a date picker
 are all `Input_Elements`. **No text is extracted.** This is a region locator, not
-an accessibility tree — to learn what a region says, crop to its box and call
-`inspect_image`.
+an accessibility tree — to learn what a region says, crop to its box and `read`
+the crop (or `inspect_image` it, if `read` says this model cannot see images).
 
 Two limits worth knowing before trusting output:
 

@@ -22,7 +22,8 @@
  * "Input_Elements" where you might want "checkbox" vs "date picker", and it
  * extracts NO text. It is a region locator. On synthetic HTML pages it returns
  * mostly "Unknown"; it earns its keep on real application screenshots. To learn
- * what a region contains, crop to its box and call inspect_image.
+ * what a region contains, crop to its box and read the crop (or call
+ * inspect_image on it when the active model is not vision-capable).
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -134,13 +135,13 @@ export default function paUitagExtension(pi: ExtensionAPI) {
 			"(x, y, width, height) plus a coarse class and confidence. Use the boxes to crop " +
 			"the image into regions you can inspect individually. Classes are coarse (Button, " +
 			"Input_Elements, Navigation, Information_Display, Menu, Sidebar, Visual_Elements, " +
-			"Others) and NO text is extracted — crop to a box and call inspect_image to read " +
+			"Others) and NO text is extracted — crop to a box and read the crop to see " +
 			"a region. Best on real application screenshots; returns mostly 'Unknown' on plain " +
 			"HTML pages.",
 		promptSnippet: "Locate UI elements in a screenshot and return their pixel bounding boxes",
 		promptGuidelines: [
 			"Use detect_ui_elements when you need the COORDINATES of UI elements in a screenshot — to crop regions, verify layout, or decide where to click.",
-			"It returns boxes and coarse classes only; it reads no text. To learn what a region says, crop the image to that box and call inspect_image on the crop.",
+			"It returns boxes and coarse classes only; it reads no text. To learn what a region says, crop the image to that box and call read on the crop (or inspect_image, if read says this model cannot see images).",
 			"Pair it with screenshot_url: capture a page to a PNG, then detect elements in that file.",
 			"On a dense screenshot, raise min_confidence (~0.5) or set limit rather than trying to reason about every low-confidence box.",
 		],
@@ -219,7 +220,7 @@ export default function paUitagExtension(pi: ExtensionAPI) {
 					"",
 					"No detections above the confidence threshold. This model is trained on real " +
 						"desktop/application screenshots; on plain or synthetic HTML pages it often " +
-						"finds little. Try min_confidence=0.1, or use inspect_image on the whole image.",
+						"finds little. Try min_confidence=0.1, or just read the whole image.",
 				);
 			} else {
 				const summary = [...counts.entries()]

@@ -5,6 +5,14 @@
  * vision-capable model to inspect an image — useful when the main chat model
  * is not a VLM.
  *
+ * THIS IS A FALLBACK, NOT THE DEFAULT PATH. Pi's built-in `read` attaches an
+ * image straight to the conversation when the active model declares
+ * input: ["image"], and direct perception beats a second-hand description.
+ * When the model is text-only, `read` degrades to the stub note
+ * "[Current model does not support images...]" and drops the attachment —
+ * that is this tool's cue. It is also the cheaper option when a large
+ * screenshot would otherwise sit in context for the rest of the session.
+ *
  * ─────────────────────────────────────────────────────────────────────────
  * NOTHING IS HARDCODED. All model configuration comes from pi's own config:
  *   - which models exist / their baseUrl / api / auth  → models.json (registry)
@@ -229,10 +237,13 @@ export default function inspectImageExtension(pi: ExtensionAPI): void {
 		label: "Inspect Image",
 		description:
 			"Analyze an image using a separate vision-capable model (chosen from pi's model registry). " +
-			"Use this whenever the active chat model cannot see images.",
+			"FALLBACK TOOL: try `read` on the image first — it attaches the image directly to this " +
+			"conversation. Use inspect_image when `read` reports that the current model does not " +
+			"support images, or to keep a large image out of the context window.",
 		promptSnippet: "Analyze an image file/URL using a vision-capable model from the registry",
 		promptGuidelines: [
-			"Use inspect_image for any request about an image the current model cannot see.",
+			"Reach for `read` first on any image file: if the active model is vision-capable, read attaches the image itself and you see it directly.",
+			"Use inspect_image when read answers '[Current model does not support images...]', when the image is a URL read cannot open, or when a large image is not worth spending context on.",
 			"Always pass a concrete prompt describing what to inspect; never a generic default.",
 			"image accepts a path, an http(s) URL, or a data:image base64 URL.",
 		],

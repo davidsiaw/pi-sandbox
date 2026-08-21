@@ -395,7 +395,7 @@ export default function paConsoleExtension(pi: ExtensionAPI) {
 					"WARNING: outside the project directory, so this file is LOST when the sandbox exits.",
 				);
 			}
-			lines.push(`To view it, call inspect_image with image="${out.absolute}".`);
+			lines.push(`To view it, call read with path="${out.absolute}" (or inspect_image, if read says this model cannot see images).`);
 			return {
 				content: [{ type: "text", text: lines.join("\n") }],
 				details: { path: out.absolute, insideProject: out.insideProject, url: currentUrl() },

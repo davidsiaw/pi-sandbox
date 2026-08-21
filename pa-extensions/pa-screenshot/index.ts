@@ -4,7 +4,8 @@
  * Registers a `screenshot_url` tool that renders a URL in a fingerprint-masked
  * headless Chromium and writes a PNG **to a file**. It never returns image
  * bytes: the result is a one-line receipt naming the path. The agent can then
- * `read` the file, hand it to `inspect_image`, or just leave it for the user.
+ * `read` the file (which attaches the image when the model is vision-capable),
+ * fall back to `inspect_image` when it is not, or just leave it for the user.
  *
  * WHY A FILE AND NOT AN INLINE IMAGE
  * A base64 image in the tool result lands in the context window (and inflates
@@ -344,13 +345,13 @@ export default function paScreenshotExtension(pi: ExtensionAPI) {
 		description:
 			"Render a URL in a fingerprint-masked headless Chromium (JS fully executed) and " +
 			"save a PNG to a file. Returns the file path, NOT the image bytes — read the file " +
-			"or pass it to inspect_image if you need to see it. Use this to capture a web page " +
+			"or pass it to read if you need to see it. Use this to capture a web page " +
 			"or a local UI (e.g. http://localhost:3000). Refuses to overwrite an existing file, " +
 			"and refuses to write anything if the page turns out to be a bot-block or CAPTCHA.",
 		promptSnippet: "Render a URL with JS and save a PNG screenshot to a file path",
 		promptGuidelines: [
 			"Use screenshot_url to capture how a page or local UI actually renders; JS is executed.",
-			"It writes a PNG file and returns the path. It does not return the image — call inspect_image on the path if you need to see the contents.",
+			"It writes a PNG file and returns the path. It does not return the image — call read on the path if you need to see the contents (or inspect_image, if read reports this model cannot see images).",
 			"Prefer a relative path (or omit path entirely): relative paths land in the project directory and persist on the host, while /tmp is lost when the sandbox exits.",
 			"For JS-rendered UIs pass wait_for_selector so the capture waits for real content instead of racing a spinner.",
 			"It refuses to overwrite; if it reports the file exists, pass a different path.",
@@ -499,7 +500,7 @@ export default function paScreenshotExtension(pi: ExtensionAPI) {
 						`relative path to keep it on the host.`,
 				);
 			}
-			lines.push(`To view it, call inspect_image with image="${out.absolute}".`);
+			lines.push(`To view it, call read with path="${out.absolute}" (or inspect_image, if read says this model cannot see images).`);
 
 			return {
 				content: [{ type: "text", text: lines.join("\n") }],

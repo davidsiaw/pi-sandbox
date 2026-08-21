@@ -375,11 +375,11 @@ export default function pdfExtension(pi: ExtensionAPI): void {
 		description:
 			"Render PDF pages to PNG images and return their file paths. Use this for scanned " +
 			"pages that pdf_map reported as having no text layer: render them, then read each " +
-			"PNG with inspect_image. It returns image paths, not text.",
+			"PNG with read (or inspect_image, if read says this model cannot see images). It returns image paths, not text.",
 		promptSnippet: "Turn scanned PDF pages into PNGs so a vision model can read them",
 		promptGuidelines: [
 			"Only use pdf_render for pages with NO text layer (pdf_map lists them). For pages with text, pdf_read is far cheaper.",
-			"It returns PNG paths, not text — follow it with inspect_image on each path to actually read the page.",
+			"It returns PNG paths, not text — follow it with read on each path to actually see the page; use inspect_image instead only when read reports this model cannot see images.",
 			"Each rendered page costs a separate vision call, so render the few pages you need, not a range.",
 		],
 		parameters: PdfRenderParams,
@@ -420,7 +420,7 @@ export default function pdfExtension(pi: ExtensionAPI): void {
 				);
 			}
 
-			lines.push("", "Read them with inspect_image on each path above.");
+			lines.push("", "View them by calling read on each path above (or inspect_image, if read says this model cannot see images).");
 
 			return {
 				content: [{ type: "text", text: lines.join("\n") }],

@@ -3,7 +3,7 @@
 Four tools: **`pdf_map`** reports the *shape* of a PDF and deliberately returns
 none of its text; **`pdf_search`** finds which pages mention something;
 **`pdf_read`** returns a bounded window of pages; **`pdf_render`** rasterises
-scanned pages so `inspect_image` can read them.
+scanned pages so `read` (or `inspect_image`) can read them.
 
 The intended loop is **map → search → read**. On a 300-page manual (~12,200
 tokens of text):
@@ -160,10 +160,10 @@ pdf_render(path, pages="2")
 Rendered 1 page of /tmp/invoice.pdf at 150 dpi:
   p.2  /tmp/pa-pdf-cache/f931e511fdc19b31-p2-r150.png  (35 KB)
 
-Read them with inspect_image on each path above.
+View them by calling read on each path above (or inspect_image, if read says this model cannot see images).
 ```
 
-Then `inspect_image` on that path returns, verified end to end:
+Then viewing that path returns, verified end to end:
 
 ```
 INVOICE 44821
@@ -174,9 +174,10 @@ TOTAL DUE $4,317.50
 
 ### Why it renders instead of OCR-ing
 
-The image is the deliverable, not text. This sandbox already has a vision tool
+The image is the deliverable, not text. This sandbox already has a vision path
 and an established idiom: `screenshot_url` writes a PNG and returns its path,
-`detect_ui_elements` crops to a box and hands it to `inspect_image`. Doing the
+`detect_ui_elements` crops to a box, and the caller `read`s the crop — falling
+back to `inspect_image` when the active model is text-only. Doing the
 same here avoids duplicating `pa-inspect-image`'s model-registry resolution,
 keeps the expensive step under the caller's control, and means a better vision
 model improves OCR for free — with no tesseract and no language packs.

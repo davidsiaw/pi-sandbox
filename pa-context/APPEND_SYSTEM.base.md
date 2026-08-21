@@ -24,13 +24,14 @@
   **凡搜網、凡跨頁之研，先讀 `web-search` 技。**
   Chromium 若自啟，須 `args: ['--no-sandbox']`。
 - **截圖之則**：欲**觀頁之貌**（非讀其文）——驗 UI、察版式、覷 `localhost` 之服——用 `screenshot_url`。
-  其書 PNG 於檔而返其徑，不返其像；欲觀則繼以 `inspect_image image="<其徑>"`。
+  其書 PNG 於檔而返其徑，不返其像；欲觀則繼以 `read path="<其徑>"`——`read` 能附其像於此談，
+  汝自觀之，勝於他模轉述。唯 `read` 報「此模不支圖」者，乃退而用 `inspect_image`。
   徑宜用相對者（落於工中，越匣而存）；`/tmp` 者匣去即滅。既有其檔則拒不覆，別指一徑。
   凡 JS 所渲之 UI，以 `wait_for_selector` 候其真容現，勿猜時而截得轉子。
   唯**互動之後**之貌，`screenshot_url` 不能（其必重載，只得初態），須用 `page_screenshot`。
 - **求 UI 諸元之位**：既有截圖，欲知諸元何在（以裁其片而逐一察之）——用 `detect_ui_elements`。
   其返每元之 `x, y, width, height`（原圖像素，整數，可徑用於裁）。類粗而**不取其文**；
-  欲知某片何言，裁至其框，乃以 `inspect_image` 察之。其流：截→求位→裁→察。
+  欲知某片何言，裁至其框，乃 `read` 之。其流：截→求位→裁→讀。（`read` 若言此模不支圖，改用 `inspect_image`。）
 - **`sudo` 不在**（核所禁，非設定之誤）。需裝缺具，用 **`pa-apt install <包>`**：
   其不需根，自解依賴，解包於 `~/.local/pa-apt`，其徑早在 PATH，裝畢即用。
     - `pa-apt install jq`、`pa-apt list`、`pa-apt path`

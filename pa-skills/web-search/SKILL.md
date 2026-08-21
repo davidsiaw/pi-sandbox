@@ -144,7 +144,8 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 - `wait_for_selector`——候某 selector 現乃截。凡 JS 所渲之 UI，用此勝於猜時。
 - `full_page`、`selector`、`width`／`height`、`scale`（2 則字銳而四倍其重）。
 - 既有其檔則**拒不覆**，別指一徑。頁若為擋／CAPTCHA，則**不書**其檔而告之。
-- 欲觀其像，繼以 `inspect_image image="<其徑>"`。
+- 欲觀其像，繼以 `read path="<其徑>"`（`read` 自附其像於談）；
+  唯 `read` 報「此模不支圖」者，乃改用 `inspect_image image="<其徑>"`。
 
 讀其文用 `yousoro_browse`；觀其貌用 `screenshot_url`。二者勿混。
 
@@ -154,11 +155,11 @@ yousoro_browse url="https://example.com/topic" extract="a" extract_attr="href"
 其返每元之框：`x, y, width, height`，皆原圖之像素（左上為原），整數，可徑用於裁。
 
 - 其類粗（八而已：Button、Input_Elements、Navigation、Information_Display、Menu、Sidebar、Visual_Elements、Others），
-  且**不取其文**。欲知某片何言，裁至其框，乃以 `inspect_image` 察之。
+  且**不取其文**。欲知某片何言，裁至其框，乃 `read` 之（不支圖之模則用 `inspect_image`）。
 - `min_confidence`（默 .25；欲精則 .5，欲多則 .1）、`iou_threshold`、`label`、`limit`。
 - 於**真應用之截圖**乃善；於樸素之 HTML 頁多返 `Unknown`，此其常也，非誤。
 
-其流：`screenshot_url`（截）→ `detect_ui_elements`（求位）→ 裁 → `inspect_image`（察）。
+其流：`screenshot_url`（截）→ `detect_ui_elements`（求位）→ 裁 → `read`（觀）。
 
 ## cloak_browse 具（重難點突破）
 

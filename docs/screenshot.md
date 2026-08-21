@@ -21,15 +21,16 @@ deliberately does not:
 
 - Base64 image bytes land in the **context window** and inflate ~33%. Full-page
   screenshots are routinely hundreds of KB; several in a row are expensive.
-- A path is reusable. The agent can `read` it, pass it to `inspect_image`, diff
-  it against a previous run, or just leave it for the human.
+- A path is reusable. The agent can `read` it (which attaches the image itself
+  when the model is vision-capable), fall back to `inspect_image` when it is not,
+  diff it against a previous run, or just leave it for the human.
 
 So the result is a one-line receipt:
 
 ```
 Saved 1280x800 PNG (13 KB) to /Users/you/proj/ui.png
 Page: My App — http://localhost:3000/
-To view it, call inspect_image with image="/Users/you/proj/ui.png".
+To view it, call read with path="/Users/you/proj/ui.png" (or inspect_image, if read says this model cannot see images).
 ```
 
 ## Where the file goes
