@@ -20,7 +20,7 @@
  * Usage: node selftest.mjs   (exit 0 = pass, non-zero = fail)
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,7 +73,7 @@ writeFileSync(join(root, ".pirag", "decoy.db"), "not-a-real-database\n");
 // ── (1) Walker behaviour ───────────────────────────────────────────────────
 const { walk, probe, isIndexable } = await import(join(here, "walk.ts"));
 
-const { files, bytes } = walk(root, { skipPaths: new Set([join(root, ".pirag")]) });
+const { files, sizes, bytes } = walk(root, { skipPaths: new Set([join(root, ".pirag")]) });
 const rel = files.map((f) => f.slice(root.length + 1).split("\\").join("/")).sort();
 
 check("indexes a dot-directory (.github/)", rel.includes(".github/workflows/build.yml"), rel.join(","));
@@ -120,6 +120,19 @@ check("excludes lockfiles", !rel.includes("package-lock.json"), rel.join(","));
 check("excludes minified bundles", !rel.includes("bundle.min.js"), rel.join(","));
 check("excludes own store (.pirag/)", !rel.some((f) => f.startsWith(".pirag/")), rel.join(","));
 check("walk reports non-zero bytes", bytes > 0, String(bytes));
+// The indexer slices using these sizes instead of re-statting every file (a stat
+// costs ~118us per file on a macOS bind mount), so they must line up exactly with
+// `files` and add up to `bytes`. A misaligned array would silently mis-slice.
+check("walk returns one size per file", sizes.length === files.length, `${sizes.length} vs ${files.length}`);
+check(
+	"walk sizes sum to the reported byte total",
+	sizes.reduce((a, b) => a + b, 0) === bytes,
+	`${sizes.reduce((a, b) => a + b, 0)} vs ${bytes}`,
+);
+check(
+	"walk sizes match statSync",
+	files.every((f, i) => statSync(f).size === sizes[i]),
+);
 
 check("isIndexable accepts .jsonl", isIndexable("session.jsonl"));
 check("isIndexable rejects .png", !isIndexable("logo.png"));
@@ -373,25 +386,13 @@ if (upstream && !process.env.PA_RAG_SKIP_EMBED) {
 // and, when embeddings are enabled, that slice-by-slice indexing actually
 // commits incrementally so an interrupted pass resumes instead of starting over.
 {
-	// Mirror the extension's slicer. Kept in sync deliberately rather than
-	// imported: index.ts is a pi extension module and importing it here would drag
-	// in ExtensionAPI types and the whole registration side effect.
-	const sliceFiles = (files, maxBytes, sizeOf) => {
-		const slices = [];
-		let current = [];
-		let currentBytes = 0;
-		for (const f of files) {
-			current.push(f);
-			currentBytes += sizeOf(f);
-			if (currentBytes >= maxBytes) {
-				slices.push(current);
-				current = [];
-				currentBytes = 0;
-			}
-		}
-		if (current.length > 0) slices.push(current);
-		return slices;
-	};
+	// The REAL slicer, imported from the indexer child (which exports it and only
+	// runs main() when it is the entry script). A copy kept "in sync deliberately"
+	// is a copy that tests itself, not the shipped code.
+	const { sliceFiles: realSliceFiles } = await import(join(here, "indexer.mjs"));
+	// Adapter: the real signature is (files, sizes[], maxBytes) because walk() now
+	// hands sizes over instead of the indexer re-statting every file.
+	const sliceFiles = (files, maxBytes, sizeOf) => realSliceFiles(files, files.map(sizeOf), maxBytes);
 
 	const even = Array.from({ length: 10 }, (_, i) => `f${i}`);
 	const s1 = sliceFiles(even, 100, () => 50); // 2 files per slice

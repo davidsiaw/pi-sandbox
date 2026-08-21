@@ -677,10 +677,12 @@ fi
 # O(repo): a big repo OOM-kills the container regardless of batch size. The
 # extension slices into SLICE_BYTES groups, which also makes each slice a commit
 # checkpoint that an interrupted pass resumes from by hash.
-run 'grep -q "indexSliced" /opt/pa/extensions/pa-rag/index.ts && echo SLICED' | grep -q SLICED \
+# The pass itself runs in a child process (indexer.mjs), so the slicing lives
+# there; index.ts only supplies sliceBytes over the config handshake.
+run 'grep -q "sliceFiles" /opt/pa/extensions/pa-rag/indexer.mjs && grep -q "sliceBytes: SLICE_BYTES" /opt/pa/extensions/pa-rag/index.ts && echo SLICED' | grep -q SLICED \
   && pass "pa-rag indexes in slices (memory is O(slice), not O(repo))" \
   || fail "pa-rag lost its sliced indexing; large repos will OOM"
-run 'grep -qE "await upstream\.indexFiles\(files" /opt/pa/extensions/pa-rag/index.ts && echo UNSLICED || echo OK_NO_WHOLE_LIST' \
+run 'grep -qE "indexFiles\(\s*files" /opt/pa/extensions/pa-rag/indexer.mjs && echo UNSLICED || echo OK_NO_WHOLE_LIST' \
   | grep -q OK_NO_WHOLE_LIST \
   && pass "pa-rag never passes the whole file list to upstream" \
   || fail "pa-rag calls indexFiles() with the entire walk result"
@@ -738,7 +740,9 @@ run 'grep -q "setStatus" /opt/pa/extensions/pa-rag/index.ts && echo STATUS' | gr
 run 'grep -q "ctx.hasUI ? makeStatus(ctx) : undefined" /opt/pa/extensions/pa-rag/index.ts && echo GUARD' | grep -q GUARD \
   && pass "pa-rag progress is guarded by ctx.hasUI (no print-mode noise)" \
   || fail "pa-rag progress not guarded for non-UI modes"
-run 'grep -q "onChunkProgress" /opt/pa/extensions/pa-rag/index.ts && echo FINE' | grep -q FINE \
+# Fine-grained progress crosses the IPC boundary: indexer.mjs forwards upstream's
+# onEmbed as a per-chunk `chunks` event, and index.ts turns it into onChunks.
+run 'grep -q "onEmbed" /opt/pa/extensions/pa-rag/indexer.mjs && grep -q "t: \"chunks\"" /opt/pa/extensions/pa-rag/indexer.mjs && grep -q "onChunks" /opt/pa/extensions/pa-rag/index.ts && echo FINE' | grep -q FINE \
   && pass "pa-rag progress updates within a slice, not just at boundaries" \
   || fail "pa-rag progress only updates per slice (coarse on big repos)"
 # The denominator must self-correct: BYTES_PER_CHUNK is a guess that measured
@@ -833,8 +837,10 @@ run 'grep -q "INDEX_VERSION" /opt/pa/extensions/pa-rag/index.ts && echo VERSIONE
 # Evaluated as arithmetic rather than parsed as a number: the two constants are
 # written with different unit chains (`1024 * 1024 * 1024` vs `2 * 1024 * ...`),
 # so comparing leading integers compares GB against MB. This check's first
-# version did exactly that and reported a false failure.
-out="$(run 'node -e '\''const fs=require("fs");const s=fs.readFileSync("/opt/pa/extensions/pa-rag/index.ts","utf8");const g=(n)=>{const m=s.match(new RegExp("const "+n+" = ([0-9*ate ]+);"));return m?Function("return ("+m[1]+")")():NaN;};const a=g("AUTO_INDEX_MAX_BYTES"),p=g("PROBE_CAP_BYTES");process.stdout.write(Number.isFinite(a)&&Number.isFinite(p)&&p>=a?("CAPS_OK auto="+(a/1048576)+"MB probe="+(p/1048576)+"MB"):("BAD auto="+a+" probe="+p))'\'' ')"
+# version did exactly that and reported a false failure. PROBE_CAP_BYTES is also
+# allowed to be expressed IN TERMS OF AUTO_INDEX_MAX_BYTES, so the expression is
+# evaluated with that identifier in scope.
+out="$(run 'node -e '\''const fs=require("fs");const s=fs.readFileSync("/opt/pa/extensions/pa-rag/index.ts","utf8");const expr=(n)=>{const m=s.match(new RegExp("const "+n+" = ([^;]+);"));return m?m[1]:"NaN";};const a=Function("return ("+expr("AUTO_INDEX_MAX_BYTES")+")")();const p=Function("AUTO_INDEX_MAX_BYTES","return ("+expr("PROBE_CAP_BYTES")+")")(a);process.stdout.write(Number.isFinite(a)&&Number.isFinite(p)&&p>=a?("CAPS_OK auto="+(a/1048576)+"MB probe="+(p/1048576)+"MB"):("BAD auto="+a+" probe="+p))'\'' ')"
 if echo "$out" | grep -q CAPS_OK; then
   pass "pa-rag probe cap >= auto-index budget ($(echo "$out" | grep -oE 'auto=[0-9]+MB probe=[0-9]+MB'))"
 else

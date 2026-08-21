@@ -22,6 +22,15 @@
  *   all come from `pi-local-rag`, unmodified. See upstream.ts for why the
  *   import looks unusual, and walk.ts for why we supply our own file list.
  *
+ * WHERE THE WORK RUNS (read this before moving anything back in-process)
+ *   The embedding pass runs in a CHILD PROCESS (indexer.mjs). In-process, a
+ *   background pass stalled pi's event loop for avg 97ms / max 290ms per 50ms
+ *   tick — visible stutter in keystroke echo and token streaming — held ~300 MB
+ *   of model in pi's heap, delayed exit by up to a whole slice, and, because
+ *   each session aborted the pass at shutdown, took FOUR sessions to finish a
+ *   3.3 MB tree. See indexer.mjs's header for the measurements. This module now
+ *   only spawns, reports and kills.
+ *
  * WHY SLICED, INCREMENTAL INDEXING
  *   Upstream's indexFiles() accumulates EVERYTHING in memory and commits in a
  *   single transaction at the end: `toIndex` holds every chunk's text and
@@ -30,52 +39,65 @@
  *   container no matter how small the embedding batch is (exit 137, schema-only
  *   DB, wrecked terminal — see scripts/patch-rag-batch.sh for that story).
  *
- *   So we never hand upstream the whole file list. We slice it into ~512 KB
- *   groups and call indexFiles() once per slice. Each call returns, commits, and
- *   frees. Measured on a 432-file / 2.2 MB tree: RSS stays FLAT at ~808 MB
- *   across 5 slices versus climbing without bound, 1308 chunks either way, for
- *   ~5% extra wall time (61.9s vs 58.9s).
+ *   So we never hand upstream the whole file list. The child slices it into
+ *   ~512 KB groups and calls indexFiles() once per slice. Each call returns,
+ *   commits, and frees. Measured on a 432-file / 2.2 MB tree: RSS stays FLAT at
+ *   ~808 MB across 5 slices versus climbing without bound, 1308 chunks either
+ *   way, for ~5% extra wall time (61.9s vs 58.9s).
  *
  *   Slicing buys three things beyond memory:
  *     - CHECKPOINTS. Each slice is committed, so an interrupted pass keeps its
  *       progress instead of losing everything.
  *     - RESUME. Upstream skips unchanged files by content hash, so the next run
  *       picks up exactly where this one stopped, for free.
- *     - A STOP POINT. session_shutdown sets abortIndex and the loop exits at the
- *       next boundary instead of embedding into a dead session.
+ *     - A STOP POINT. session_shutdown SIGTERMs the child, which stops at the
+ *       next boundary instead of embedding into a dead session. pi does not wait
+ *       for it.
  *
  * WHY IT ALWAYS INDEXES, AND WHY IT IS DELIBERATELY SLOW
  *   Fully automatic indexing is the point of this extension: having to remember
- *   /rag-index is worth more friction-cost than the CPU it saves. So the budget
- *   is 1 GB of source and the background pass simply grinds through it, however
- *   long that takes (~1 min/MB, so a 1 GB repo is many hours). That is
- *   acceptable ONLY because the pass is polite and interruptible:
+ *   /rag-index is worth more friction-cost than the CPU it saves. So a project
+ *   inside the auto-index budget is simply ground through, however long it takes
+ *   (~1 min/MB measured). That is acceptable ONLY because the pass is polite and
+ *   interruptible:
  *
+ *     - OUT OF PROCESS, AND NICED. The child renices itself to 19, so it yields
+ *       to the session it is indexing for. Impossible in-process.
  *     - LOW-MEMORY BATCH. Background passes embed at batch 2 (~282 MB peak)
  *       rather than 8 (~729 MB). Costs ~27% throughput for 2.6x less memory.
  *       An explicit /rag-index the user is waiting on uses the fast batch.
  *     - DUTY CYCLE. Between slices the background pass sleeps proportionally to
- *       how long the last slice took, so it uses a bounded FRACTION of a core
- *       instead of pegging one. Foreground passes do not throttle.
+ *       how long the last slice took.
  *     - CHECKPOINTS + RESUME. Every slice commits and unchanged files are
  *       hash-skipped, so being killed at any point costs nothing.
  *
- *   Thread count is NOT a usable lever: Transformers.js v2 hardcodes its ORT
- *   session options, so intraOpNumThreads has no measurable effect (verified:
- *   1/2/4 threads all ~15 chunks/sec). Batch size and scheduling are all we have.
+ *   Thread count is NOT a usable lever, and neither is CPU affinity: ORT resets
+ *   its own affinity (verified: `taskset -c 0,1` still measured 695-754% CPU),
+ *   Transformers.js v2 hardcodes its session options (`intraOpNumThreads: 1`
+ *   patched in: no change), and OMP_NUM_THREADS is ignored. Renicing the child
+ *   is the only scheduling control that actually exists.
  *
  *   The probe itself is ~1-2 ms even on huge trees, because it bails as soon
  *   as it crosses the cap.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { load, type Upstream } from "./upstream.ts";
-import { isIndexable, probe, walk } from "./walk.ts";
+import { isIndexable, probe } from "./walk.ts";
 
 const EXTENSION_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -100,13 +122,23 @@ const VERSION_FILE = "index-version.json";
 /**
  * Auto-index budget. Below this we index in the background without asking.
  *
- * Deliberately huge: automatic indexing is the whole value proposition, and a
- * background pass is now memory-bounded, throttled, checkpointed and resumable,
- * so the only cost of a big repo is elapsed time. Above this the project is
- * almost certainly not source (a data dump, a mounted volume) and silently
- * grinding for days would be wrong — so it asks instead.
+ * 32 MB, derived from the measured rate rather than chosen for feel: a pass
+ * embeds ~16.7 chunks/sec on ~3300-char chunks, i.e. roughly 1 minute per MB,
+ * so 32 MB is already a ~30-minute background grind. The previous value was
+ * 1 GiB, which at that rate is about 17 HOURS — so the "this is probably not
+ * source, ask first" path was unreachable in practice and every mounted data
+ * dump got ground through silently.
  */
-const AUTO_INDEX_MAX_BYTES = 1024 * 1024 * 1024;
+const AUTO_INDEX_MAX_BYTES = 32 * 1024 * 1024;
+
+/** Absolute path of the child that does the embedding. See indexer.mjs. */
+const INDEXER_PATH = join(EXTENSION_DIR, "indexer.mjs");
+
+/**
+ * Scheduling priority for a background child. 19 is maximum niceness, i.e. "run
+ * on cores nobody else wants", so the interactive session always wins.
+ */
+const BACKGROUND_NICE = 19;
 
 /**
  * Bytes of source per slice. Each slice is one upstream indexFiles() call, so
@@ -131,17 +163,19 @@ const FOREGROUND_BATCH_SIZE = 8;
 
 /**
  * Fraction of wall-clock time a background pass may spend working. 0.5 means it
- * sleeps as long as the slice took, so it consumes at most ~half a core over
- * time rather than pegging one for hours. Expressed as a duty cycle rather than
- * a fixed pause so it self-tunes: slow machines and big slices back off more.
+ * sleeps as long as the slice took. Expressed as a duty cycle rather than a fixed
+ * pause so it self-tunes: slow machines and big slices back off more.
+ *
+ * NOTE what this does and does not buy. It halves the wall-clock time spent
+ * embedding; it does NOT bound the pass to a fraction of a core, which an earlier
+ * version of this comment claimed. Measured, one pass runs 22 threads at 750-800%
+ * CPU while working, and no ORT knob changes that (see the file header). The
+ * child's nice 19 is what keeps that off the interactive session.
  */
 const BACKGROUND_DUTY_CYCLE = 0.5;
 
 /** Ceiling on a single throttle sleep, so progress stays visible. */
 const MAX_THROTTLE_MS = 5000;
-
-/** Minimal breather after a foreground slice, just to let the TUI repaint. */
-const FOREGROUND_PAUSE_MS = 50;
 
 /** Footer status key. Stable so updates replace rather than stack. */
 const STATUS_KEY = "pa-rag";
@@ -191,9 +225,13 @@ const STATUS_LINGER_MS = 8000;
  *
  * Must stay >= AUTO_INDEX_MAX_BYTES, or the probe would bail before it could
  * tell whether a project is inside the auto-index budget and everything between
- * the two limits would wrongly fall into the "ask first" path.
+ * the two limits would wrongly fall into the "ask first" path. Kept at 2x rather
+ * than enormous, because the walk is the one piece of startup work that is
+ * synchronous and therefore on pi's UI thread: measured 118us per file on a
+ * macOS bind mount versus 14us on the container's own filesystem, so a cap that
+ * lets it enumerate gigabytes is a self-inflicted startup stall.
  */
-const PROBE_CAP_BYTES = 2 * 1024 * 1024 * 1024;
+const PROBE_CAP_BYTES = 2 * AUTO_INDEX_MAX_BYTES;
 
 /** Fallback throughput before we have measured this machine. Chunks/second. */
 const DEFAULT_CHUNKS_PER_SEC = 36;
@@ -316,12 +354,6 @@ export default function paRagExtension(pi: ExtensionAPI) {
 	let indexing = false;
 	let indexedThisSession = false;
 	let lastSummary: string | null = null;
-	/**
-	 * Set when the session goes away. Checked between slices so a long background
-	 * pass stops promptly instead of embedding into a dead session. Safe to stop
-	 * at any slice boundary: everything before it is already committed.
-	 */
-	let abortIndex = false;
 
 	/** Resolve (and create) the store dir for a project root. */
 	const ensureStore = (cwd: string): string => {
@@ -525,136 +557,231 @@ export default function paRagExtension(pi: ExtensionAPI) {
 		return skip;
 	};
 
-	/**
-	 * Split `files` into byte-bounded slices. A file bigger than SLICE_BYTES gets
-	 * its own slice rather than being split: chunk boundaries belong to upstream,
-	 * and a single file is bounded anyway (the walker rejects anything > 500 KB).
-	 */
-	const sliceFiles = (files: string[], maxBytes: number): string[][] => {
-		const slices: string[][] = [];
-		let current: string[] = [];
-		let currentBytes = 0;
-		for (const file of files) {
-			let size = 0;
-			try {
-				size = statSync(file).size;
-			} catch {
-				// Vanished between walk and now. Keep it and let upstream count it as
-				// an unreadable skip rather than dropping it silently here.
-			}
-			current.push(file);
-			currentBytes += size;
-			if (currentBytes >= maxBytes) {
-				slices.push(current);
-				current = [];
-				currentBytes = 0;
-			}
-		}
-		if (current.length > 0) slices.push(current);
-		return slices;
-	};
-
-	interface SlicedResult {
+	/** Result of one child indexing pass, as reported over the protocol. */
+	interface ChildResult {
 		indexed: number;
 		chunks: number;
 		skipped: number;
 		aborted: boolean;
+		elapsedSec: number;
+		/** Set when the walk found nothing worth indexing. */
+		empty?: boolean;
+		/** Set when the child failed; the pass produced no result. */
+		error?: string;
 	}
 
+	/** The running background/foreground child, if any. Killed at shutdown. */
+	let indexChild: ReturnType<typeof spawn> | null = null;
+
 	/**
-	 * Feed `files` to upstream one slice at a time. See the file header for why
-	 * this is never a single indexFiles() call.
+	 * Run one indexing pass in a child process (indexer.mjs) and report progress.
+	 *
+	 * This function deliberately does no embedding, no walking and no SQLite work:
+	 * all of it belongs to the child, because in-process it stalled pi's UI thread
+	 * (measured avg 97ms / max 290ms event-loop lag) and delayed exit by a whole
+	 * slice. See indexer.mjs's header.
 	 */
-	const sleep = (ms: number): Promise<void> =>
-		new Promise<void>((resolve) => {
-			const timer = setTimeout(resolve, ms);
-			// Never hold the process open just for a throttle nap.
-			timer.unref?.();
-		});
-
-	const indexSliced = async (
-		upstream: Upstream,
-		db: unknown,
-		files: string[],
-		force: boolean,
-		opts: {
-			background?: boolean;
-			onProgress?: (sliceDone: number, sliceTotal: number, chunks: number) => void;
-			/**
-			 * Fires as chunks are embedded WITHIN a slice. `done` counts cumulatively
-			 * across the whole pass, because upstream's own onEmbed total resets per
-			 * slice and a bar that restarts every 512 KB is worse than none.
-			 */
-			onChunkProgress?: (doneChunks: number, sliceDone: number, sliceTotal: number) => void;
-		} = {},
-	): Promise<SlicedResult> => {
+	const spawnIndexer = (opts: {
+		cwd: string;
+		storeDir: string;
+		sessionFile?: string;
+		/** Explicit file list instead of a walk (the dirty-file flush). */
+		files?: string[];
+		force?: boolean;
+		background?: boolean;
+		/** Called once the child has walked the tree, before any embedding. */
+		onWalk?: (files: number, bytes: number) => void;
+		onSlice?: (done: number, total: number, chunks: number) => void;
+		onChunks?: (done: number, sliceDone: number, sliceTotal: number) => void;
+	}): Promise<ChildResult> => {
 		const background = opts.background ?? false;
-		const slices = sliceFiles(files, SLICE_BYTES);
-		let indexed = 0;
-		let chunks = 0;
-		let skipped = 0;
-		// Chunks embedded in slices already finished. upstream's onEmbed reports a
-		// per-slice figure, so this is what makes the total monotonic.
-		let embeddedBefore = 0;
 
-		// Upstream reads PA_RAG_BATCH_SIZE per embedBatch() call (see
-		// scripts/patch-rag-batch.sh), so this selects the memory/speed tradeoff for
-		// the duration of this pass. Restored afterwards so a background pass cannot
-		// leave the process stuck in low-memory mode.
-		const previousBatch = process.env.PA_RAG_BATCH_SIZE;
-		process.env.PA_RAG_BATCH_SIZE = String(
-			background ? BACKGROUND_BATCH_SIZE : FOREGROUND_BATCH_SIZE,
-		);
+		// An explicit file list is passed through a temp file, not argv: a bulk
+		// rename can queue thousands of paths and blow past ARG_MAX.
+		let filesFile: string | undefined;
+		let tempDir: string | undefined;
+		if (opts.files) {
+			tempDir = mkdtempSync(join(tmpdir(), "pa-rag-"));
+			filesFile = join(tempDir, "files.json");
+			writeFileSync(filesFile, JSON.stringify(opts.files));
+		}
 
-		try {
-			for (let i = 0; i < slices.length; i++) {
-				if (abortIndex) return { indexed, chunks, skipped, aborted: true };
+		const config = {
+			cwd: opts.cwd,
+			storeDir: opts.storeDir,
+			ppid: process.pid,
+			force: opts.force ?? false,
+			background,
+			includeSessions,
+			skipPaths: [...buildSkipPaths(opts.cwd, opts.sessionFile)],
+			filesFile,
+			sliceBytes: SLICE_BYTES,
+			batchSize: background ? BACKGROUND_BATCH_SIZE : FOREGROUND_BATCH_SIZE,
+			dutyCycle: BACKGROUND_DUTY_CYCLE,
+			maxThrottleMs: MAX_THROTTLE_MS,
+			// Only unattended work yields. A /rag-index the user is watching should
+			// finish as fast as the machine allows.
+			nice: background ? BACKGROUND_NICE : 0,
+		};
 
-				const sliceStarted = Date.now();
-				// Passing a progress object is what makes upstream stop writing its own
-				// \r-based progress bar to stderr (indexing.ts flips an internal
-				// _suppressStderr when callbacks are supplied). Without this, a
-				// background index scribbles over the TUI and pollutes -p output.
-				const result = await upstream.indexFiles(
-					slices[i],
-					{
-						onFile: () => {},
-						onEmbed: (done) => {
-							opts.onChunkProgress?.(embeddedBefore + done, i, slices.length);
-						},
-					},
-					db,
-					force,
-				);
-				const sliceMs = Date.now() - sliceStarted;
-
-				indexed += result.indexed;
-				chunks += result.chunks;
-				skipped += result.skipped;
-				embeddedBefore += result.chunks;
-
-				opts.onProgress?.(i + 1, slices.length, chunks);
-
-				if (i < slices.length - 1) {
-					if (background) {
-						// Duty-cycle throttle: work for sliceMs, then rest in proportion.
-						// A slice that hash-skipped everything took ~0ms and rests ~0ms, so
-						// catch-up passes over an already-indexed tree stay fast.
-						const rest = Math.min(
-							MAX_THROTTLE_MS,
-							Math.round(sliceMs * ((1 - BACKGROUND_DUTY_CYCLE) / BACKGROUND_DUTY_CYCLE)),
-						);
-						if (rest > 0) await sleep(rest);
-					} else {
-						await sleep(FOREGROUND_PAUSE_MS);
-					}
-				}
+		return new Promise<ChildResult>((resolveResult) => {
+			let child: ReturnType<typeof spawn>;
+			try {
+				child = spawn(process.execPath, [INDEXER_PATH, JSON.stringify(config)], {
+					cwd: opts.cwd,
+					stdio: ["ignore", "pipe", "pipe"],
+					// Its own process group, so a Ctrl-C or SIGINT aimed at pi does not
+					// tear down a pass that is safe to let finish. Shutdown kills it
+					// explicitly, and the child also exits on its own if pi disappears.
+					detached: true,
+				});
+			} catch (err) {
+				resolveResult({
+					indexed: 0,
+					chunks: 0,
+					skipped: 0,
+					aborted: false,
+					elapsedSec: 0,
+					error: err instanceof Error ? err.message : String(err),
+				});
+				return;
 			}
 
-			return { indexed, chunks, skipped, aborted: false };
-		} finally {
-			if (previousBatch === undefined) delete process.env.PA_RAG_BATCH_SIZE;
-			else process.env.PA_RAG_BATCH_SIZE = previousBatch;
+			indexChild = child;
+			// Never hold pi open for a background pass: quitting must be instant.
+			if (background) {
+				child.unref();
+				child.stdout?.unref?.();
+				child.stderr?.unref?.();
+			}
+
+			let result: ChildResult | null = null;
+			let failure: string | null = null;
+			let stderr = "";
+			let pending = "";
+
+			const handle = (line: string): void => {
+				if (line.trim().length === 0) return;
+				let event: Record<string, unknown>;
+				try {
+					event = JSON.parse(line) as Record<string, unknown>;
+				} catch {
+					// Not protocol output. Treat as diagnostics rather than crashing the
+					// reader: a dependency that prints to stdout must not break indexing.
+					stderr += `${line}\n`;
+					return;
+				}
+				switch (event.t) {
+					case "walk":
+						opts.onWalk?.(Number(event.files), Number(event.bytes));
+						break;
+					case "chunks":
+						opts.onChunks?.(
+							Number(event.done),
+							Number(event.sliceDone),
+							Number(event.sliceTotal),
+						);
+						break;
+					case "slice":
+						opts.onSlice?.(Number(event.done), Number(event.total), Number(event.chunks));
+						break;
+					case "empty":
+						result = {
+							indexed: 0,
+							chunks: 0,
+							skipped: 0,
+							aborted: false,
+							elapsedSec: 0,
+							empty: true,
+						};
+						break;
+					case "done":
+						result = {
+							indexed: Number(event.indexed),
+							chunks: Number(event.chunks),
+							skipped: Number(event.skipped),
+							aborted: Boolean(event.aborted),
+							elapsedSec: Number(event.elapsedSec),
+						};
+						break;
+					case "error":
+						failure = String(event.message ?? "unknown error");
+						break;
+				}
+			};
+
+			child.stdout?.setEncoding("utf8");
+			child.stdout?.on("data", (chunk: string) => {
+				pending += chunk;
+				const lines = pending.split("\n");
+				// Keep the trailing fragment: a JSON event can be split across reads.
+				pending = lines.pop() ?? "";
+				for (const line of lines) handle(line);
+			});
+			child.stderr?.setEncoding("utf8");
+			child.stderr?.on("data", (chunk: string) => {
+				// Bounded: a crash loop must not grow pi's heap.
+				if (stderr.length < 4000) stderr += chunk;
+			});
+
+			const finish = (fallbackError?: string): void => {
+				if (indexChild === child) indexChild = null;
+				if (tempDir) {
+					try {
+						rmSync(tempDir, { recursive: true, force: true });
+					} catch {
+						// Temp cleanup is best-effort.
+					}
+				}
+				if (result) {
+					resolveResult(result);
+					return;
+				}
+				resolveResult({
+					indexed: 0,
+					chunks: 0,
+					skipped: 0,
+					aborted: false,
+					elapsedSec: 0,
+					error: failure ?? fallbackError ?? stderr.trim() ?? "indexer exited without a result",
+				});
+			};
+
+			child.on("error", (err) => finish(err.message));
+			child.on("close", (code, signal) => {
+				if (result || failure) {
+					finish();
+					return;
+				}
+				// Killed at shutdown before the first slice finished: not an error, just
+				// nothing done yet. The next run resumes from the last commit.
+				if (signal) {
+					result = {
+						indexed: 0,
+						chunks: 0,
+						skipped: 0,
+						aborted: true,
+						elapsedSec: 0,
+					};
+					finish();
+					return;
+				}
+				finish(`indexer exited with code ${code}${stderr ? `: ${stderr.trim()}` : ""}`);
+			});
+		});
+	};
+
+	/** Stop a running pass. Returns immediately; the child exits on its own. */
+	const stopIndexer = (): void => {
+		const child = indexChild;
+		if (!child) return;
+		indexChild = null;
+		try {
+			// SIGTERM, not SIGKILL: the child stops at the next slice boundary, so
+			// the slice in flight is still committed instead of being thrown away.
+			child.kill("SIGTERM");
+		} catch {
+			// Already gone.
 		}
 	};
 
@@ -676,130 +803,136 @@ export default function paRagExtension(pi: ExtensionAPI) {
 	): Promise<string> => {
 		if (indexing) return "pa-rag: an index pass is already running.";
 		indexing = true;
-		abortIndex = false;
 		try {
 			const dir = ensureStore(cwd);
 			storeDir = dir;
 			bindStore(dir);
 
-			let upstream: Upstream;
-			try {
-				upstream = await load(EXTENSION_DIR);
-			} catch (err) {
-				const msg = `pa-rag: ${err instanceof Error ? err.message : String(err)}`;
-				notify(msg, "error");
-				return msg;
-			}
-
-			const skipPaths = buildSkipPaths(cwd, sessionFile);
-			const { files, bytes } = walk(cwd, { skipPaths, includeSessions });
-			if (files.length === 0) return "pa-rag: nothing indexable found.";
-
+			const started = Date.now();
 			const chunksPerSec = readThroughput(dir);
-			// A throttled background pass spends only BACKGROUND_DUTY_CYCLE of its
-			// wall time working, so quote the user the real elapsed estimate.
-			const dutyFactor = opts.background ? 1 / BACKGROUND_DUTY_CYCLE : 1;
-			const eta = estimateSeconds(bytes, chunksPerSec) * dutyFactor;
-			notify(
-				`pa-rag: indexing ${files.length} files (${humanBytes(bytes)}), ~${humanDuration(eta)}` +
-					`${opts.background ? " in the background" : ""}…`,
-				"info",
-			);
 
-			const db = upstream.openDb();
-			try {
-				const started = Date.now();
+			// Filled in by the child's first event. The parent does NOT walk: that used
+			// to be a second full pass over the tree on pi's own thread, and on a bind
+			// mount a walk costs 118us per file.
+			let estTotalChunks = 1;
 
-				// Estimated total chunks, for a percentage before we know the real count.
-				// upstream only reports totals per slice, so a global bar needs this.
-				const estTotalChunks = Math.max(1, Math.round(bytes / BYTES_PER_CHUNK));
+			opts.status?.(`pa-rag ${progressBar(0)} starting…`, true);
 
-				opts.status?.(`pa-rag ${progressBar(0)} starting…`, true);
+			// Report at quartiles. Per-slice would be noise on a small repo and a
+			// flood on a large one; silence for many minutes is worse than both.
+			// The footer carries the fine-grained view; these are the durable
+			// transcript breadcrumbs for a pass that outlives its scrollback.
+			let nextQuartile = 1;
 
-				// Report at quartiles. Per-slice would be noise on a small repo and a
-				// flood on a large one; silence for many minutes is worse than both.
-				// The footer carries the fine-grained view; these are the durable
-				// transcript breadcrumbs for a pass that outlives its scrollback.
-				let nextQuartile = 1;
-				const result = await indexSliced(upstream, db, files, opts.force ?? false, {
-					background: opts.background,
-					onProgress: (done, totalSlices, chunksSoFar) => {
-						if (totalSlices < 4) return;
-						const pct = (done / totalSlices) * 100;
-						if (pct >= nextQuartile * 25 && nextQuartile <= 3) {
-							nextQuartile = Math.floor(pct / 25) + 1;
-							notify(`pa-rag: ${Math.round(pct)}% (${chunksSoFar} chunks)…`, "info");
-						}
-					},
-					onChunkProgress: (doneChunks, sliceDone, sliceTotal) => {
-						if (!opts.status) return;
-
-						// BYTES_PER_CHUNK is a rough guess (see its docstring: measured 1854
-						// to 3324 on two real trees), so grow the denominator once reality
-						// exceeds it. Without this the bar reads "102/~88 chunks" at 100%
-						// and then keeps counting, which looks broken.
-						const denom = Math.max(estTotalChunks, doneChunks);
-
-						// With several slices, slice completion is a far better signal than
-						// the byte estimate; within the current slice interpolate by chunks.
-						const fraction =
-							sliceTotal > 1
-								? Math.min(1, (sliceDone + Math.min(1, doneChunks / denom)) / sliceTotal)
-								: Math.min(1, doneChunks / denom);
-
-						// ETA from THIS pass's observed rate, which already includes the
-						// background throttle — so the number reflects reality rather than
-						// the unthrottled calibration figure. Suppressed once the estimate
-						// is exhausted, since "0s left" while still working is a lie.
-						const elapsed = (Date.now() - started) / 1000;
-						const rate = doneChunks / Math.max(0.001, elapsed);
-						const remaining = denom - doneChunks;
-						const etaText =
-							rate > 0.2 && remaining > 0 ? ` · ~${humanDuration(remaining / rate)} left` : "";
-
-						// "~" on the denominator: it is an estimate until the pass ends.
-						opts.status(
-							`pa-rag ${progressBar(fraction)} ${Math.round(fraction * 100)}% · ` +
-								`${doneChunks}/~${denom} chunks${etaText}`,
-						);
-					},
-				});
-				const elapsedSec = (Date.now() - started) / 1000;
-
-				// Only trust a measurement with enough work to be meaningful. Throttled
-				// background passes must NOT be measured: their elapsed time is mostly
-				// deliberate sleeping, and recording that as throughput would poison
-				// every future estimate.
-				if (!opts.background && result.chunks > 200 && elapsedSec > 2) {
-					writeThroughput(dir, result.chunks / elapsedSec);
-				}
-
-				indexedThisSession = true;
-				const summary = result.aborted
-					? `pa-rag: stopped after ${result.indexed} files (${result.chunks} chunks) — ` +
-						`progress kept, resumes next run → ${STORE_DIR}/`
-					: `pa-rag: indexed ${result.indexed} files (${result.chunks} chunks), ` +
-						`${result.skipped} unchanged, ${humanDuration(elapsedSec)} → ${STORE_DIR}/`;
-				lastSummary = summary;
-
-				// Leave the outcome visible briefly, then clear: a permanent footer
-				// entry for finished work is clutter, and the transcript already has
-				// the summary notification.
-				if (opts.status) {
-					opts.status(
-						result.aborted
-							? `pa-rag stopped · ${result.chunks} chunks saved`
-							: `pa-rag ${progressBar(1)} done · ${result.chunks} chunks`,
-						true,
+			const result = await spawnIndexer({
+				cwd,
+				storeDir: dir,
+				sessionFile,
+				force: opts.force,
+				background: opts.background,
+				onWalk: (files, bytes) => {
+					estTotalChunks = Math.max(1, Math.round(bytes / BYTES_PER_CHUNK));
+					// A throttled background pass spends only BACKGROUND_DUTY_CYCLE of its
+					// wall time working, so quote the user the real elapsed estimate.
+					const dutyFactor = opts.background ? 1 / BACKGROUND_DUTY_CYCLE : 1;
+					const eta = estimateSeconds(bytes, chunksPerSec) * dutyFactor;
+					notify(
+						`pa-rag: indexing ${files} files (${humanBytes(bytes)}), ~${humanDuration(eta)}` +
+							`${opts.background ? " in the background" : ""}…`,
+						"info",
 					);
+				},
+				onSlice: (done, totalSlices, chunksSoFar) => {
+					if (totalSlices < 4) return;
+					const pct = (done / totalSlices) * 100;
+					if (pct >= nextQuartile * 25 && nextQuartile <= 3) {
+						nextQuartile = Math.floor(pct / 25) + 1;
+						notify(`pa-rag: ${Math.round(pct)}% (${chunksSoFar} chunks)…`, "info");
+					}
+				},
+				onChunks: (doneChunks, sliceDone, sliceTotal) => {
+					if (!opts.status) return;
+
+					// BYTES_PER_CHUNK is a rough guess (see its docstring: measured 1854
+					// to 3324 on two real trees), so grow the denominator once reality
+					// exceeds it. Without this the bar reads "102/~88 chunks" at 100%
+					// and then keeps counting, which looks broken.
+					const denom = Math.max(estTotalChunks, doneChunks);
+
+					// With several slices, slice completion is a far better signal than
+					// the byte estimate; within the current slice interpolate by chunks.
+					const fraction =
+						sliceTotal > 1
+							? Math.min(1, (sliceDone + Math.min(1, doneChunks / denom)) / sliceTotal)
+							: Math.min(1, doneChunks / denom);
+
+					// ETA from THIS pass's observed rate, which already includes the
+					// background throttle — so the number reflects reality rather than
+					// the unthrottled calibration figure. Suppressed once the estimate
+					// is exhausted, since "0s left" while still working is a lie.
+					const elapsed = (Date.now() - started) / 1000;
+					const rate = doneChunks / Math.max(0.001, elapsed);
+					const remaining = denom - doneChunks;
+					const etaText =
+						rate > 0.2 && remaining > 0 ? ` · ~${humanDuration(remaining / rate)} left` : "";
+
+					// "~" on the denominator: it is an estimate until the pass ends.
+					opts.status(
+						`pa-rag ${progressBar(fraction)} ${Math.round(fraction * 100)}% · ` +
+							`${doneChunks}/~${denom} chunks${etaText}`,
+					);
+				},
+			});
+
+			if (result.error) {
+				const msg = `pa-rag: index failed: ${result.error}`;
+				notify(msg, "error");
+				if (opts.status) {
+					opts.status("pa-rag · index failed", true);
 					const clear = setTimeout(() => opts.status?.(undefined, true), STATUS_LINGER_MS);
 					clear.unref?.();
 				}
-
-				return summary;
-			} finally {
-				db.close();
+				return msg;
 			}
+
+			if (result.empty) {
+				opts.status?.(undefined, true);
+				return "pa-rag: nothing indexable found.";
+			}
+
+			const elapsedSec = result.elapsedSec || (Date.now() - started) / 1000;
+
+			// Only trust a measurement with enough work to be meaningful. Throttled
+			// background passes must NOT be measured: their elapsed time is mostly
+			// deliberate sleeping, and recording that as throughput would poison
+			// every future estimate.
+			if (!opts.background && result.chunks > 200 && elapsedSec > 2) {
+				writeThroughput(dir, result.chunks / elapsedSec);
+			}
+
+			indexedThisSession = true;
+			const summary = result.aborted
+				? `pa-rag: stopped after ${result.indexed} files (${result.chunks} chunks) — ` +
+					`progress kept, resumes next run → ${STORE_DIR}/`
+				: `pa-rag: indexed ${result.indexed} files (${result.chunks} chunks), ` +
+					`${result.skipped} unchanged, ${humanDuration(elapsedSec)} → ${STORE_DIR}/`;
+			lastSummary = summary;
+
+			// Leave the outcome visible briefly, then clear: a permanent footer
+			// entry for finished work is clutter, and the transcript already has
+			// the summary notification.
+			if (opts.status) {
+				opts.status(
+					result.aborted
+						? `pa-rag stopped · ${result.chunks} chunks saved`
+						: `pa-rag ${progressBar(1)} done · ${result.chunks} chunks`,
+					true,
+				);
+				const clear = setTimeout(() => opts.status?.(undefined, true), STATUS_LINGER_MS);
+				clear.unref?.();
+			}
+
+			return summary;
 		} catch (err) {
 			const msg = `pa-rag: index failed: ${err instanceof Error ? err.message : String(err)}`;
 			notify(msg, "error");
@@ -852,18 +985,12 @@ export default function paRagExtension(pi: ExtensionAPI) {
 		try {
 			const dir = storeDir ?? ensureStore(cwd);
 			bindStore(dir);
-			const upstream = await load(EXTENSION_DIR);
-			const db = upstream.openDb();
-			try {
-				// Sliced for the same reason as a full pass: a bulk edit (package-wide
-				// rename, codegen) can queue enough files that one upstream call
-				// accumulates too much. Foreground batch: this is a handful of files the
-				// agent just touched and is about to search, so latency matters more
-				// than the memory difference at this size.
-				await indexSliced(upstream, db, batch, false);
-			} finally {
-				db.close();
-			}
+			// Same child as a full pass, with an explicit file list. Foreground batch
+			// and normal priority: this is a handful of files the agent just touched
+			// and is about to search, so latency matters more than politeness. Sliced
+			// for the same reason as a full pass, because a package-wide rename can
+			// queue enough files to matter.
+			await spawnIndexer({ cwd, storeDir: dir, files: batch });
 		} catch {
 			// Best-effort. Do not disturb the session over a refresh failure.
 		} finally {
@@ -913,7 +1040,11 @@ export default function paRagExtension(pi: ExtensionAPI) {
 	// Fixed at the source by scripts/patch-rag-batch.sh, which caps the batch at
 	// 8 (~451MB peak) and truncates to the model's real 512-token window.
 	pi.on("session_start", async (event, ctx) => {
-		// Reset per-session state (matters for reload/resume/fork).
+		// Reset per-session state (matters for reload/resume/fork). A pass left
+		// running by the session being replaced is killed rather than adopted: its
+		// ctx is stale, so its progress reporting would throw, and the pass below
+		// resumes its work anyway via hash-skip.
+		stopIndexer();
 		storeDir = null;
 		indexedThisSession = false;
 		lastSummary = null;
@@ -1223,9 +1354,11 @@ export default function paRagExtension(pi: ExtensionAPI) {
 	// only long-lived resource is the debounce timer — which must be cleared or
 	// it can fire against a torn-down session.
 	pi.on("session_shutdown", (_event, ctx) => {
-		// Stop a background pass at its next slice boundary. Everything already
-		// committed stays; the rest is picked up by hash-skip on the next run.
-		abortIndex = true;
+		// SIGTERM the indexing child, if any. It stops at its next slice boundary;
+		// everything already committed stays, and the rest is picked up by hash-skip
+		// on the next run. We do NOT wait for it: waiting for the in-flight slice is
+		// exactly the 5-15s exit hang that moving the pass out of process removed.
+		stopIndexer();
 		// Drop the footer line, or a resumed/replaced session inherits a frozen
 		// progress bar for work that is no longer running.
 		try {

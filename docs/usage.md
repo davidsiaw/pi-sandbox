@@ -184,6 +184,10 @@ Set these when invoking `pa`:
 | `PA_IMAGE`      | `davidsiaw/pi-sandbox:latest`    | image to run |
 | `MOUNT_AUTH`    | `1`                              | `0` = do **not** mount `auth.json`; keeps all credentials out of the sandbox (the agent then needs its own auth inside) |
 | `MISE_VOLUME`   | `pi-sandbox-mise`                | name of the runtime cache volume |
+| `PA_NPM_VOLUME` | `pi-sandbox-npm`                 | volume holding pi's npm package store (`~/.pi/agent/npm`). Set to `""` to opt out and reinstall `packages` from scratch every launch |
+| `PA_NPM_CACHE_VOLUME` | `pi-sandbox-npm-cache`     | volume holding npm's own cache (`~/.npm`). Set to `""` to opt out |
+| `PA_TS_CACHE_TTL` | `300`                          | seconds to reuse the cached tailnet host snapshot instead of calling `tailscale status`. `0` disables the cache |
+| `PA_OPENV_CACHE_TTL` | `0` (off)                   | seconds to cache values resolved from `pa.openv`. **Writes those secrets to `~/.cache/pa` in plaintext** (`0600` in a `0700` dir), so it is opt-in; skips one `op item get` per line, each 0.5–2s |
 | `NO_MOUNT_SYSTEM` | `0`                            | `1` = do **not** mount a host `SYSTEM.md` (which would replace pi's default system prompt) |
 | `PI_TOOL_EXECUTION` | `sequential`                 | tool-call strategy. `sequential` runs one tool at a time; `parallel` restores upstream concurrent fan-out. Any other value falls back to `parallel`. |
 | `PA_UPDATE_COMMAND` | `pa update`                  | what pi's "Update Available" banner tells the user to run. Set it if your launcher is named something else (see [scripts.md](scripts.md#scriptspatch-update-commandsh-root)) |
@@ -201,7 +205,25 @@ MOUNT_AUTH=0 pa
 
 # use a separate throwaway runtime cache
 MISE_VOLUME=scratch pa
+
+# reinstall pi packages from npm on every launch (no persistence)
+PA_NPM_VOLUME= PA_NPM_CACHE_VOLUME= pa
+
+# accept plaintext secret caching for 12h in exchange for a faster launch
+PA_OPENV_CACHE_TTL=43200 pa
 ```
+
+### Why `packages` are kept in a volume
+
+`packages` in `settings.json` is installed with npm on **every** pi startup, and
+before the first prompt appears. In a container that is destroyed on exit that
+meant a cold install every launch: measured 4.8s cold, 0.66s warm, versus 0.55s
+with nothing to install. `PA_NPM_VOLUME` and `PA_NPM_CACHE_VOLUME` persist the
+store and the npm cache in Docker volumes, so only the first launch pays.
+
+Volumes, not bind mounts of the host's `~/.pi/agent/npm`: the host store was
+built for the host (a native module compiled on macOS is useless to a Linux
+container), and the sandbox has no business writing into the real one.
 
 ### Tool call serialization
 

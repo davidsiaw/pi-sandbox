@@ -173,9 +173,9 @@ Slicing buys three things beyond the memory bound:
 - **Free resume.** Upstream skips unchanged files by content hash, so the next
   run continues exactly where the last one stopped. Verified: re-running all
   slices of an indexed tree re-embeds **0** chunks and skips all 432 files.
-- **A stop point.** `session_shutdown` sets an abort flag that the slice loop
-  checks, so a long background pass stops at the next boundary rather than
-  embedding into a dead session.
+- **A stop point.** `session_shutdown` SIGTERMs the indexer child, which stops at
+  the next boundary rather than embedding into a dead session. pi does not wait
+  for it, so quitting is instant.
 
 `SLICE_BYTES` (512 KB) is both the memory bound and the checkpoint granularity.
 Raising it trades memory for slightly less overhead.
@@ -200,18 +200,64 @@ less throughput — while an explicit `/rag-index` the user is waiting on uses
 call** (not once at import), which is what allows the two modes to coexist.
 
 Background passes are also **duty-cycled**: after each slice the pass sleeps in
-proportion to how long that slice took (50% duty → at most ~half a core over
-time, instead of pegging one for hours). It self-tunes, so slower machines back
-off further. A slice that hash-skipped everything took ~0 ms and therefore rests
+proportion to how long that slice took (50% duty → half its wall time spent
+working). It self-tunes, so slower machines back off further. Note what this does
+*not* buy: it does **not** bound the pass to a fraction of a core. A pass runs 22
+threads at 750–800% CPU while it is working; the child's `nice 19` is what keeps
+that off the interactive session. A slice that hash-skipped everything took ~0 ms and therefore rests
 ~0 ms, so catch-up passes over an already-indexed tree stay fast.
 
 Throughput is deliberately **not** recorded from a throttled background pass: its
 elapsed time is mostly intentional sleeping, and storing that as `chunks/sec`
 would poison every future ETA. Only foreground passes calibrate.
 
-**Thread count is not a lever.** Transformers.js v2 hardcodes its ORT session
-options, so `intraOpNumThreads` has no measurable effect (1/2/4 threads all land
-at ~15 chunks/s). Batch size and scheduling are all there is.
+**Thread count is not a lever, and neither is CPU affinity.** Transformers.js v2
+hardcodes its ORT session options, so `intraOpNumThreads` has no measurable
+effect (1/2/4 threads all land at ~15 chunks/s); `OMP_NUM_THREADS` /
+`ORT_NUM_THREADS` are ignored; and ORT resets its own affinity, so `taskset -c
+0,1` still measured 695–754% CPU. Batch size, `nice`, and scheduling are all
+there is.
+
+## Why indexing runs in a child process
+
+`indexer.mjs` is a separate process; `index.ts` only spawns it, renders its
+progress, and kills it at shutdown. Embedding in pi's own process was measurably
+hostile:
+
+| | in-process | child process |
+|---|---|---|
+| pi event-loop lag (50 ms probe) | avg **97 ms**, max **290 ms** | avg **2 ms**, max **6 ms** |
+| `pi -p "hi"` in a fresh 3.3 MB tree | **15.4 s** | **2.6 s** |
+| exit after a background pass | hangs 5–15 s | instant |
+| model resident in pi's heap | ~300 MB | none |
+| sessions needed to finish 3.3 MB | 4 | 1 (the child outlives the prompt) |
+| `nice` | impossible | 19 |
+
+The event-loop lag is the part users actually felt: 97 ms average stall makes
+keystroke echo and token streaming visibly stutter. The 15.4 s figure is the same
+`-p "hi"` run that takes 3.0 s with pa-rag disabled — i.e. indexing *was* the
+"pa is frozen for a minute" report.
+
+The parent talks to the child over one NDJSON stream on stdout (`walk`, `chunks`,
+`slice`, `done`, `empty`, `error`); stderr is only read if the child fails.
+
+Three non-obvious things this design needed, each found by it going wrong:
+
+- **`process.exit()` truncates queued pipe writes.** The final `done` event was
+  being dropped, so every successful pass looked to the parent like "exited
+  without a result". The child now flushes stdout, then exits (with a 2 s safety
+  timer, because ORT's thread pool would otherwise keep it alive forever).
+- **EPIPE is asynchronous.** When pi exits, the child's next write raises EPIPE
+  as an `error` event — an uncaught exception that killed the child *mid-slice*,
+  rolling the slice back. Verified: a fresh 3.3 MB tree ended with 0 files
+  committed. With the error swallowed, the slice finishes and commits, and the
+  parent-liveness check decides when to stop.
+- **Do not `unref()` the throttle timer.** Copied from the in-process version
+  (where pi's handles kept the loop alive), it left the child with no referenced
+  handles during a duty-cycle nap, so node exited 0 after the **first** slice.
+
+The child also polls `kill(ppid, 0)` between slices, so a SIGKILLed pi (OOM,
+`docker kill`, closed terminal) cannot leave an orphan burning eight cores.
 
 ## Progress visibility
 
@@ -265,17 +311,22 @@ background pass:
 | 0.4 MB (this repo) | 260 | ~15 s | ~30 s |
 | 2.2 MB | 1,308 | ~1 min | ~2 min |
 | 10 MB | ~5,900 | ~3.5 min | ~7 min |
+| **32 MB (the cap)** | ~19,000 | ~11 min | ~22 min |
 | 100 MB | ~59,000 | ~35 min | ~70 min |
 | 1 GB | ~590,000 | ~6 h | ~12 h |
 
 The startup path **probes first** and auto-indexes in the background up to
-**1 GB**. That budget is deliberately huge: *fully automatic indexing is the
-point*, and never having to remember `/rag-index` is worth more than the CPU it
-saves. It is only safe to be this generous because the pass is memory-bounded,
-throttled, checkpointed and resumable — so a long one is merely slow, and killing
-it costs nothing. Above the cap the project is almost certainly not source (a data
-dump, a mounted volume), where silently grinding for days would be wrong, so it
-prints an estimate and waits for `/rag-index`.
+**32 MB**. The budget is generous because *fully automatic indexing is the point*
+— never having to remember `/rag-index` is worth more than the CPU it saves — and
+it is safe to be generous because the pass is out-of-process, niced, memory-
+bounded, throttled, checkpointed and resumable, so a long one is merely slow and
+killing it costs nothing.
+
+32 MB is derived from the rate above rather than chosen for feel: it is already a
+~22-minute background grind. The cap used to be **1 GB**, which at ~1 min/MB is
+about **17 hours** — so the "this is probably not source, ask first" path was
+unreachable in practice and every mounted data dump got ground through silently.
+Above the cap pa-rag prints an estimate and waits for `/rag-index`.
 
 `PROBE_CAP_BYTES` (2 GB) must stay **at or above** the auto-index budget, or the
 probe would bail before it could tell whether a project fits and everything
