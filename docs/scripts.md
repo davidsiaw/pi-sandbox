@@ -77,6 +77,52 @@ Installs a fixed system Node via NodeSource (Debian's own is too old for pi).
 Kept separate from mise so that when a project switches Node through mise, pi's
 runtime is untouched. Honors `PI_NODE_MAJOR` (default 22).
 
+## scripts/pi-patch.mjs (build-time helper)
+
+Shared patcher used by `install-pi.sh` and `patch-update-command.sh`. Reads a
+JSON spec on stdin, scans **every** `.js` under the installed package's `dist/`
+and under `node_modules/@earendil-works/*/dist/`, and applies each edit wherever
+its anchor appears.
+
+It exists because of a trap that cost a release. pi ships the same code **twice**:
+
+- `dist/modes/…`, `dist/…` — the plain tsc output, still shipped, still imported
+  by the SDK entry point.
+- `dist/bundle/…` — an esbuild bundle, minified, with `pi-agent-core` inlined.
+
+From pi 0.84 `package.json`'s `bin.pi` points at **`dist/bundle/cli.js`**, so the
+CLI no longer reads the pretty tree at all. Our patches targeted only the pretty
+tree, so they kept applying cleanly, the build stayed green, the smoke test kept
+grepping the patched string — and the running agent ignored every one of them.
+The visible symptom was pi printing
+`pi --session-dir /path/.pi-sessions --session <id>` on exit again instead of
+`pa --session <id>`.
+
+So each edit carries **variants**: the pretty spelling and the minified spelling
+of the same change, each with a `marker` — the substring of its own replacement
+text that proves it was applied. Contract:
+
+- Each edit must match in **at least one** file across all its variants, or the
+  run throws — a moved anchor fails the build instead of going quiet.
+- Every occurrence found is replaced (not just the first).
+- A file already containing a variant's marker counts as applied, so the script is
+  idempotent and safe on a cached layer.
+- A marker must be ≥ 12 chars and a substring of its `to`, both asserted.
+- `requireBundle` (default true) asserts at least one patched file lives under
+  `dist/bundle/`. **This is the check that matters**: it is what fails if upstream
+  reshuffles bundling again, rather than shipping an inert patch.
+
+Why a separate `marker` instead of just testing for the replacement text: a short
+or generic `to` occurs naturally elsewhere in `dist/`, so every file reads as
+"already patched" and a **dead anchor reports success** — the same silent pass the
+script exists to prevent. (Caught while building this: a one-char `to` matched 541
+files.) Markers must also be distinctive per *variant*, not merely per patch: two
+edits sharing one marker would make the second skip itself after the first wrote
+it.
+
+The Dockerfile copies it to `/tmp/pi-patch.mjs` before `install-pi.sh` and deletes
+it after `patch-update-command.sh`, the last consumer.
+
 ## scripts/install-pi.sh (root)
 
 `npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}` (default `latest`,
@@ -87,20 +133,20 @@ exact release so each image is reproducible and tagged with its pi version.
 
 After install it **patches pi's resume-command output**. Vanilla pi prints
 `pi --session-dir /... --session <id>` when it exits; inside the sandbox that
-command wouldn't drive the container. The script edits
-`dist/modes/interactive/interactive-mode.js` so `formatResumeCommand` reads the
-command name from `PI_RESUME_COMMAND` (set to `pa` via the Dockerfile `ENV`) and
-skips the `--session-dir` arg (the `pa` launcher already supplies it from
-`$PWD`). Result: `pa --session <id>`, runnable from the host. The patch matches
-two exact anchors, is idempotent (safe to re-run), and errors loudly if the
-anchors move in a future pi release. See [usage.md](usage.md#resuming-a-session).
+command wouldn't drive the container. The patch makes `formatResumeCommand` read
+the command name from `PI_RESUME_COMMAND` (set to `pa` via the Dockerfile `ENV`)
+and skip the `--session-dir` arg (the `pa` launcher already supplies it from
+`$PWD`). Result: `pa --session <id>`, runnable from the host. Applied through
+[`pi-patch.mjs`](#scriptspi-patchmjs-build-time-helper), so it lands in the
+bundle the `pi` bin runs as well as the pretty tree.
+See [usage.md](usage.md#resuming-a-session).
 
 It then **patches tool execution to be configurable**. pi's agent loop already
 supports serialized tool calls — `agent-loop.js` branches on
 `config.toolExecution === "sequential"` — but the coding agent never sets that
 option (there are zero references to `toolExecution` in its `dist`), so the
-`"parallel"` default in `pi-agent-core/dist/agent.js` always wins and no setting,
-flag, or env var can reach it. The script rewrites that one line to honour
+`"parallel"` default in `pi-agent-core`'s `Agent` constructor always wins and no
+setting, flag, or env var can reach it. The patch rewrites that one line to honour
 `PI_TOOL_EXECUTION`, and the Dockerfile sets it to `sequential`.
 
 Why: a weaker model can emit ten tool calls in a single message. Concurrent
@@ -110,11 +156,11 @@ through `withFileMutationQueue()`, so this is about predictability rather than
 correctness. Set `PI_TOOL_EXECUTION=parallel` to restore upstream behaviour; any
 value other than `sequential` or `parallel` falls back to `parallel`.
 
-This patch reaches into a **transitive dependency** (`pi-agent-core`), so it
-asserts its anchor appears exactly once and fails the build if upstream
-restructures. The smoke test checks both the patch text and the resolved
-strategy for all four env states, so a refactor that keeps the string but ignores
-it is still caught.
+This patch reaches into a **transitive dependency** (`pi-agent-core`), which
+exists twice: the real `node_modules` copy the SDK loads, and a copy inlined into
+pi's bundle. Both are patched. The smoke test checks the patch text in the bundle
+*and* the resolved strategy for all four env states, so a refactor that keeps the
+string but ignores it is still caught.
 
 Finally, because this step is the **last root step** and ran npm as root (with
 `HOME=/home/agent`), it removes and recreates `~/.npm` and `~/.pi/agent/npm`
@@ -201,8 +247,12 @@ itself — but `pa update` would not update them at all, while
 `pi update --extensions` does, for the session you are in. Redirecting it would
 swap imperfect advice for wrong advice.
 
-Only the advice changes: `pi update` still works if run deliberately. Asserts its
-anchor, is idempotent, and **fails the build** if a future pi release moves it.
+Only the advice changes: `pi update` still works if run deliberately. Applied
+through [`pi-patch.mjs`](#scriptspi-patchmjs-build-time-helper), so it reaches the
+minified bundle the `pi` bin actually runs; the anchor for the release banner ends
+at the backtick after `update`, so it cannot match the `update --extensions`
+banner below it. Idempotent, and **fails the build** if a future pi release moves
+the anchor.
 
 ## scripts/patch-rag-batch.sh (root)
 

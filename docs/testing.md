@@ -54,7 +54,10 @@ cache volume, exercising the real runtime path a user would hit.
 | settings seeded with current version (no changelog) | `settings.json` gets `lastChangelogVersion` = installed pi version, so pi doesn't replay its changelog |
 | trust.json seeded writable (Trust prompt can persist) | `~/.pi/agent/trust.json` is writable, so clicking "Trust" doesn't fail on a read-only mount |
 | PI_RESUME_COMMAND=pa in image | the resume command name env is set to `pa` |
-| resume-command patch applied to pi | pi's `formatResumeCommand` reads `PI_RESUME_COMMAND` and drops `--session-dir`, so it prints `pa --session <id>` |
+| resume-command patch reaches the tree the pi bin loads | the patch is checked in the directory of `package.json`'s `bin.pi` — the minified `dist/bundle/`, not the pretty `dist/modes/` tree. Grepping the pretty copy is how this test passed for a release while the CLI printed vanilla `pi --session-dir … --session <id>`: pi 0.84 moved the bin to a bundle and the patch went inert |
+| pi bin prints `pa --session <id>` (no --session-dir) | functional, not textual: extracts `formatResumeCommand` from the bundle and calls it with a stub sessionManager, with and without `PI_RESUME_COMMAND`. Catches an upstream refactor that keeps the env-var reference but stops using it |
+| update-command patch reaches the tree the pi bin loads | same bin-relative check for the "Update Available" banner |
+| tool-execution patch reaches the tree the pi bin loads | `pi-agent-core` is inlined into the bundle; the functional `Agent` check below constructs it from `node_modules`, so the bundle copy needs its own assertion |
 | baked APPEND_SYSTEM.base.md present | container guidance is baked into the image |
 | baked skill present | a skill is baked at `/opt/pa/skills` |
 | baked extension present | an extension is baked at `/opt/pa/extensions` |

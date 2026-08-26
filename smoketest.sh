@@ -265,24 +265,109 @@ echo "$out" | grep -q TRUST_WRITABLE && echo "$out" | grep -q CWD_TRUSTED \
 run 'touch "$HOME/.npm/wtest" "$HOME/.pi/agent/npm/wtest" 2>&1 && echo NPM_WRITABLE' | grep -q NPM_WRITABLE \
   && pass "npm dirs writable (pi can install extensions)" || fail "npm dirs not writable for arbitrary uid"
 
+# Every pi source patch below must be checked against the tree the `pi` BIN
+# loads, which since pi 0.84 is the esbuild bundle at dist/bundle/, NOT the pretty
+# dist/modes/ tree. Grepping only the pretty copy is how the resume-command patch
+# passed this smoke test for a whole release while the CLI ignored it and printed
+# `pi --session-dir ... --session <id>` again. pi_bin_has() greps the directory
+# containing the resolved bin, so it follows a future move on its own.
+#
+# The needle is passed base64-encoded. A raw needle contains quotes, braces and
+# `$`, and it has to survive run() + `bash -lc "..."` + a heredoc — three layers of
+# quoting that mangled it silently (the check reported UNPATCHED for a string that
+# was right there). base64 is alphanumeric, so nothing can chew on it.
+pi_bin_has() {
+  local b64
+  b64="$(printf '%s' "$1" | base64 | tr -d '\n')"
+  run "cat > /tmp/binhas.mjs <<'EOF'
+import fs from \"node:fs\";
+import path from \"node:path\";
+const root = \"/usr/lib/node_modules/@earendil-works/pi-coding-agent\";
+const bin = JSON.parse(fs.readFileSync(path.join(root, \"package.json\"), \"utf8\")).bin.pi;
+const dir = path.dirname(path.join(root, bin));
+const needle = Buffer.from(process.argv[2], \"base64\").toString(\"utf8\");
+const hit = (d) => fs.readdirSync(d, { withFileTypes: true }).some((e) =>
+  e.isDirectory() ? hit(path.join(d, e.name))
+    : e.name.endsWith(\".js\") && fs.readFileSync(path.join(d, e.name), \"utf8\").includes(needle));
+process.stdout.write(hit(dir) ? \"BIN_PATCHED\" : \"BIN_UNPATCHED \" + dir);
+EOF
+node /tmp/binhas.mjs $b64 2>&1"
+}
+
 run 'echo "$PI_RESUME_COMMAND"' | grep -q '^pa$' \
   && pass "PI_RESUME_COMMAND=pa in image" || fail "PI_RESUME_COMMAND not set to pa"
-run 'grep -q "process.env.PI_RESUME_COMMAND || APP_NAME" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo PATCHED' | grep -q PATCHED \
-  && pass "resume-command patch applied to pi" || fail "resume-command patch missing"
+out="$(pi_bin_has 'process.env.PI_RESUME_COMMAND')"
+echo "$out" | grep -q BIN_PATCHED \
+  && pass "resume-command patch reaches the tree the pi bin loads" \
+  || fail "resume-command patch missing from the pi bin's own tree: $out"
+
+# Functional, not textual: build the resume line from the bundle's own
+# formatResumeCommand with a stub sessionManager. Catches an upstream refactor
+# that keeps the env-var text but stops using it.
+#
+# The regex lazily matches to the first `}`, which is only correct for MINIFIED
+# source (no braces inside the function body). That is fine because the walk
+# covers the bin's own directory -- the bundle -- and not the pretty tree. If
+# upstream ever ships an unminified bundle this check fails loudly rather than
+# quietly passing.
+out="$(run 'cat > /tmp/resume.mjs <<"EOF"
+import fs from "node:fs";
+import path from "node:path";
+const root = "/usr/lib/node_modules/@earendil-works/pi-coding-agent";
+const bin = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).bin.pi;
+const dir = path.dirname(path.join(root, bin));
+let src;
+const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+  const f = path.join(d, e.name);
+  if (e.isDirectory()) walk(f);
+  else if (e.name.endsWith(".js")) {
+    const t = fs.readFileSync(f, "utf8");
+    const m = t.match(/function formatResumeCommand\(sessionManager\)\{[\s\S]*?\n?\}/);
+    if (m) src = m[0];
+  } } };
+walk(dir);
+if (!src) { process.stdout.write("NO_FN"); process.exit(0); }
+// The body references the bundles fs alias, APP_NAME and quoteIfNeeded; supply them.
+const make = new Function("fs8", "APP_NAME", "quoteIfNeeded", src + "; return formatResumeCommand;");
+const fn = make({ existsSync: () => true }, "pi", (s) => s);
+const sm = {
+  isPersisted: () => true,
+  getSessionFile: () => "/x/.pi-sessions/s.jsonl",
+  getSessionDir: () => "/x/.pi-sessions",
+  getSessionId: () => "abcd",
+  usesDefaultSessionDir: () => false,
+};
+const tty = process.stdout.isTTY;
+Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+process.env.PI_RESUME_COMMAND = "pa";
+const withEnv = fn(sm);
+delete process.env.PI_RESUME_COMMAND;
+const without = fn(sm);
+Object.defineProperty(process.stdout, "isTTY", { value: tty, configurable: true });
+const ok = withEnv === "pa --session abcd" && without.startsWith("pi --session-dir ");
+process.stdout.write(ok ? "RESUME_OK" : "BAD with=" + withEnv + " without=" + without);
+EOF
+node /tmp/resume.mjs 2>&1')"
+echo "$out" | grep -q RESUME_OK \
+  && pass "pi bin prints \`pa --session <id>\` (no --session-dir)" \
+  || fail "resume line is wrong: $out"
 
 # pi's "Update Available" banner must say `pa update`. Following `pi update` in
 # here upgrades a container that is destroyed on exit, so the banner returns next
 # launch; pulling the image is what updating pi means.
 run 'echo "$PA_UPDATE_COMMAND"' | grep -q '^pa update$' \
   && pass "PA_UPDATE_COMMAND='pa update' in image" || fail "PA_UPDATE_COMMAND not set to 'pa update'"
-run 'grep -q "process.env.PA_UPDATE_COMMAND" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo PATCHED' | grep -q PATCHED \
-  && pass "update-command patch applied to pi" || fail "update-command patch missing"
+out="$(pi_bin_has 'process.env.PA_UPDATE_COMMAND')"
+echo "$out" | grep -q BIN_PATCHED \
+  && pass "update-command patch reaches the tree the pi bin loads" \
+  || fail "update-command patch missing from the pi bin's own tree: $out"
 
 # The sibling extensions banner is deliberately NOT redirected: pi packages live
 # under ~/.pi/agent/npm and `pa update` would not touch them, so `pi update
 # --extensions` remains the best advice available.
-run 'grep -q "APP_NAME} update --extensions" /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js && echo INTACT' | grep -q INTACT \
-  && pass "extensions-update banner left alone" || fail "extensions banner was rewritten or moved"
+out="$(pi_bin_has 'APP_NAME} update --extensions')"
+echo "$out" | grep -q BIN_PATCHED \
+  && pass "extensions-update banner left alone" || fail "extensions banner was rewritten or moved: $out"
 
 # Tool calls must be serialized. pi's agent loop supports it but the coding agent
 # never sets toolExecution, so install-pi.sh patches agent.js to read
@@ -291,6 +376,13 @@ run 'echo "$PI_TOOL_EXECUTION"' | grep -q '^sequential$' \
   && pass "PI_TOOL_EXECUTION=sequential in image" || fail "PI_TOOL_EXECUTION not set to sequential"
 run 'grep -q "process.env.PI_TOOL_EXECUTION" /usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/agent.js && echo PATCHED' | grep -q PATCHED \
   && pass "tool-execution patch applied to pi-agent-core" || fail "tool-execution patch missing"
+# ...and to the copy of pi-agent-core inlined into the bundle, which is the one
+# the CLI runs. The functional check below constructs Agent from node_modules, so
+# without this the bundle could drift unnoticed.
+out="$(pi_bin_has 'process.env.PI_TOOL_EXECUTION')"
+echo "$out" | grep -q BIN_PATCHED \
+  && pass "tool-execution patch reaches the tree the pi bin loads" \
+  || fail "tool-execution patch missing from the pi bin's own tree: $out"
 
 # Assert the patch actually changes the resolved strategy, not just that the
 # string is present: construct the Agent and read back toolExecution for each

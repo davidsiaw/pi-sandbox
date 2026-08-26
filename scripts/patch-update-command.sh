@@ -44,55 +44,43 @@ set -euo pipefail
 #
 #   Same idiom as install-pi.sh and patch-rag-batch.sh: assert the anchor, fail
 #   the build if upstream restructures.
+#
+# WHY BOTH A PRETTY AND A MINIFIED ANCHOR
+#   pi ships this code twice: the pretty `dist/` tree, and the esbuild bundle under
+#   `dist/bundle/` that the `pi` bin actually runs (pi >= 0.84). Patching only the
+#   pretty copy applies cleanly and does nothing at runtime. pi-patch.mjs applies
+#   both spellings everywhere and fails the build if nothing under dist/bundle/
+#   matched. The `to` string is the minified form in both cases -- it is valid JS
+#   either way, and keeping one spelling means the anchor cannot half-match.
 
 PI_DIR="${PI_DIR:-$(npm root -g)/@earendil-works/pi-coding-agent}"
-FILE="${1:-$PI_DIR/dist/modes/interactive/interactive-mode.js}"
-[ -f "$FILE" ] || { echo "pi interactive-mode.js not found at $FILE" >&2; exit 1; }
+export PI_DIR
+PATCHER="${PATCHER:-$(dirname "$0")/pi-patch.mjs}"
+[ -f "$PATCHER" ] || { echo "pi-patch.mjs not found at $PATCHER" >&2; exit 1; }
 
-node - "$FILE" <<'PATCH'
-const fs = require("fs");
-
-const file = process.argv[2];
-let src = fs.readFileSync(file, "utf8");
-
-// The launcher name is read at runtime, so one image serves a launcher called
-// something else without rebuilding.
-const command = '(process.env.PA_UPDATE_COMMAND || "pa update")';
-
-// The new-pi-release banner only. Its anchor has no --extensions, so it cannot
-// match the package-updates banner beneath it.
-const edits = [
-  {
-    what: "new-version banner",
-    from: 'const action = theme.fg("accent", `${APP_NAME} update`);',
-    to: `const action = theme.fg("accent", ${command});`,
-  },
-];
-
-let applied = 0;
-
-for (const edit of edits) {
-  if (src.includes(edit.to)) {
-    console.log(`update-command patch: ${edit.what} already patched`);
-    continue;
-  }
-
-  const count = src.split(edit.from).length - 1;
-  if (count !== 1) {
-    throw new Error(
-      `update-command patch: expected 1 anchor for the ${edit.what}, found ${count}. ` +
-        "Upstream changed its update notification; patch-update-command.sh needs updating.",
-    );
-  }
-
-  src = src.replace(edit.from, edit.to);
-  applied += 1;
+# The new-pi-release banner only. Both anchors end at the closing backtick after
+# `update`, so neither can match the `update --extensions` banner beneath it.
+# The launcher name is read at RUNTIME, so one image serves a differently named
+# launcher without a rebuild.
+node "$PATCHER" <<'SPEC'
+{
+  "name": "update-command",
+  "edits": [
+    {
+      "what": "new-version banner",
+      "variants": [
+        {
+          "from": "const action = theme.fg(\"accent\", `${APP_NAME} update`);",
+          "to": "const action = theme.fg(\"accent\", process.env.PA_UPDATE_COMMAND || \"pa update\");",
+          "marker": "accent\", process.env.PA_UPDATE_COMMAND"
+        },
+        {
+          "from": "theme.fg(\"accent\",`${APP_NAME} update`)",
+          "to": "theme.fg(\"accent\",process.env.PA_UPDATE_COMMAND||\"pa update\")",
+          "marker": "accent\",process.env.PA_UPDATE_COMMAND"
+        }
+      ]
+    }
+  ]
 }
-
-if (applied === 0) {
-  process.exit(0);
-}
-
-fs.writeFileSync(file, src);
-console.log(`update-command patch applied (${applied} banner(s) now say \`pa update\`)`);
-PATCH
+SPEC

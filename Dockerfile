@@ -233,6 +233,7 @@ ENV PI_RESUME_COMMAND=pa
 # tool-execution patch in install-pi.sh. Set PI_TOOL_EXECUTION=parallel to opt out.
 ENV PI_TOOL_EXECUTION=sequential
 COPY scripts/install-pi.sh /tmp/install-pi.sh
+COPY scripts/pi-patch.mjs /tmp/pi-patch.mjs
 RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 
 # Make pi's "new version available" banner say `pa update` instead of `pi update`.
@@ -241,7 +242,7 @@ RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 # Read by the patch at runtime, so a differently named launcher can override it.
 ENV PA_UPDATE_COMMAND="pa update"
 COPY scripts/patch-update-command.sh /tmp/patch-update-command.sh
-RUN bash /tmp/patch-update-command.sh && rm /tmp/patch-update-command.sh
+RUN bash /tmp/patch-update-command.sh && rm /tmp/patch-update-command.sh /tmp/pi-patch.mjs
 
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

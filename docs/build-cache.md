@@ -119,7 +119,9 @@ Corollaries worth remembering:
   so the source copy cannot disturb them.
 - **`install-pi.sh` stays last** even though it is expensive: `PI_VERSION` is a
   build arg that changes with every nightly pi release, so it would invalidate
-  everything below it wherever you put it.
+  everything below it wherever you put it. `pi-patch.mjs` is copied in the same
+  region (it only exists to patch what `install-pi.sh` just installed) and is
+  deleted after `patch-update-command.sh`, its last consumer.
 
 ## Diagnosing a slow build
 

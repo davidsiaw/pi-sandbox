@@ -95,6 +95,13 @@ pi's `formatResumeCommand` so that (a) the printed command name comes from
 launcher already supplies it). The patch is idempotent and only affects the
 copy of pi baked into the image; your host pi is untouched.
 
+pi ships that function twice — once in its plain `dist/` output and once in the
+minified `dist/bundle/` that the `pi` command actually executes — so the patch is
+applied to both and the build fails if the bundle copy is missed. If you ever see
+a bare `pi --session-dir /.../.pi-sessions --session <id>` line again, that is the
+symptom of the bundle copy going unpatched; see
+[scripts.md](scripts.md#scriptspi-patchmjs-build-time-helper).
+
 ### What is deliberately *not* mounted
 
 - other `~/.pi/` extension state (files an extension keeps outside

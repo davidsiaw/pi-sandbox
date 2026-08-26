@@ -65,6 +65,7 @@ picon/
     ├── install-system-deps.sh # apt packages (build/runtime libs)
     ├── install-node-system.sh # fixed system Node for pi
     ├── install-pi.sh          # the pi agent (global npm)
+    ├── pi-patch.mjs           # shared source-patcher for pi (pretty tree + bundle)
     ├── install-browser.sh     # Playwright + Chromium
     ├── install-mise.sh        # mise, system-wide
     ├── setup-home.sh          # writable HOME for arbitrary uid
