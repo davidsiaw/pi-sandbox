@@ -374,6 +374,58 @@ pre-trusted, writable copy means pi never prompts or writes, and the host file
 is never touched. (The launcher also passes `pi --approve` as belt-and-braces.)
 See [usage.md](usage.md#project-trust).
 
+## scripts/seed-auth.sh
+
+Runs from the entrypoint as the runtime uid. Writes a writable
+`~/.pi/agent/auth.json` in the ephemeral home, so the host's credentials file is
+never mounted at pi's real path.
+
+Why: pi **writes** `auth.json` — on a completed `/login`, and on an OAuth refresh
+when a stored credential is within five minutes of `expires`. A read-only mount
+at the real path makes both fail (`EACCES`), and a read-write one lets a
+disposable container rewrite the host's credentials. Seeding avoids the choice.
+
+Base content comes from the first available of:
+
+1. `PA_AUTH_SEED` — the file's content in an env var, so a launcher can resolve it
+   from a vault without writing it to disk on the host. The entrypoint `unset`s
+   this before `exec`, so neither pi nor the agent inherits it.
+2. `/opt/pa/auth.host.json` — the host `auth.json`, staged read-only by the
+   launcher.
+3. **An `auth.json` that already exists at the target** — which means an older
+   launcher bind-mounted the host file at pi's real path. It is used as the base
+   and only rewritten when there is something to add, because under a read-write
+   mount that write lands on the host's own file.
+
+With none of the three, **no file is written**: pi creates its own `{}` when it
+first needs one, and writing an empty file here would only mask a launcher
+problem. Invalid JSON in any source is reported on stderr and skipped rather than
+aborting.
+
+On top of that base it rebuilds the **`anthropic-oauth`** entry from
+`~/.pi/agent/auth2api/claude-*.json` (a mount that persists across containers).
+That entry is only a stub — access/refresh copied from the token file plus an
+expiry pi accepts — and auth2api owns the real refresh, so regenerating it is
+what makes a disposable `auth.json` cost no re-login. Files are tried
+newest-mtime-first and the first one that parses *and* carries both tokens wins,
+so a truncated write from a crashed rotation falls back to the previous token
+instead of forcing a login. Any `anthropic-oauth` entry in the base is
+deliberately overwritten: a stub staged from the host may name a token auth2api
+has already rotated away.
+
+Expiry is `min(token file's own expiry, now + 12h)`, matching the extension's
+refresh stub, so pi "refreshes" twice a day from a local file read rather than
+over the network. Written `0600` under `umask 077`. See
+[usage.md](usage.md#credentials-the-authjson-trade-off) and
+[anthropic-oauth.md](anthropic-oauth.md).
+
+**Backward compatibility.** Source 3 above is what makes a new image safe on an
+old launcher. When the base came from an existing target, the file is only
+rewritten if the oauth `access`/`refresh` actually differ — a differing *expiry*
+is not enough, since pi advances that itself — so a legacy read-write mount is
+left byte-identical when there is nothing new to say. Two smoke tests pin this;
+see [testing.md](testing.md).
+
 ## scripts/merge-append-system.sh
 
 Assembles the final `~/.pi/agent/APPEND_SYSTEM.md` pi reads: host append (if the

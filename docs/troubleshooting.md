@@ -189,9 +189,39 @@ container — remove it.
 
 ## Agent can't reach a model / auth errors
 
-By default `pa` mounts `~/.pi/agent/auth.json` read-only. If you ran with
+`pa` stages `~/.pi/agent/auth.json` read-only at `/opt/pa/auth.host.json` and the
+entrypoint seeds a writable copy into the ephemeral home (see
+[usage.md](usage.md#credentials-the-authjson-trade-off)). If you ran with
 `MOUNT_AUTH=0`, the sandbox has no host credentials and needs its own auth. Drop
 `MOUNT_AUTH=0` (or provide auth inside the sandbox) to fix.
+
+If a key in `auth.json` is written as `"$MY_VAR"` or `"!command"`, the provider
+goes unavailable when it cannot be resolved — check the var is actually
+forwarded (`pa.env` / `pa.openv`) and that `op` was signed in at launch; `pa`
+prints a warning per line it could not resolve.
+
+The symptom for an unresolvable value is **not** an auth error — the provider is
+dropped from the model catalog entirely, so you get only:
+
+```
+Warning: No models match pattern "your-model-id"
+```
+
+An *empty* value does this too (a 1Password field label that matched a blank
+field); `pa` warns `resolved EMPTY ... not forwarding it` for that case.
+
+## `Credential store modify failed ... EACCES`
+
+```
+Credential store modify failed for anthropic-oauth: EACCES: permission denied,
+open '/home/agent/.pi/agent/auth.json'
+```
+
+pi tried to persist a login or a refreshed OAuth token and the file was not
+writable. Current `pa` cannot produce this — it seeds a writable copy — so it
+means something is mounting the host `auth.json` at that path read-only. Check
+for a stale local `~/crun.d/pa` that still does
+`-v …/auth.json:/home/agent/.pi/agent/auth.json:ro`.
 
 ## A `git@github.com` package works in `pi` but fails in `pa`
 

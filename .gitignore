@@ -17,6 +17,13 @@ npm-debug.log*
 *.tsbuildinfo
 /tmp/
 
+# smoketest fixture dirs. Created under the repo root on purpose (macOS TMPDIR is
+# outside Docker Desktop's shared paths, so a bind mount from there is empty) and
+# removed by the cleanup trap -- these patterns only catch a crashed run.
+/.pa-smoke-pkg.*
+/.pa-smoke-auth.*
+/.pa-smoke-sim.*
+
 # Editor / OS cruft
 .DS_Store
 *.swp

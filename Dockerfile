@@ -211,7 +211,8 @@ COPY pa-context/APPEND_SYSTEM.base.md /opt/pa/APPEND_SYSTEM.base.md
 COPY scripts/merge-append-system.sh /usr/local/bin/merge-append-system.sh
 COPY scripts/seed-settings.sh /usr/local/bin/seed-settings.sh
 COPY scripts/seed-trust.sh /usr/local/bin/seed-trust.sh
-RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh
+COPY scripts/seed-auth.sh /usr/local/bin/seed-auth.sh
+RUN chmod 0755 /usr/local/bin/merge-append-system.sh /usr/local/bin/seed-settings.sh /usr/local/bin/seed-trust.sh /usr/local/bin/seed-auth.sh
 
 # `pa-apt`: install Debian packages without root, into a user prefix, plus the
 # profile.d wiring that puts that prefix on PATH. This is what makes sudo

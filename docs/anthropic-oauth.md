@@ -34,6 +34,7 @@ auth2api.
 | `pa-extensions/pa-anthropic-oauth/index.ts` | OAuth flow, model catalog, usage status bar |
 | `scripts/start-auth2api.sh` | Watcher: waits for tokens, launches auth2api |
 | `scripts/patch-auth2api.sh` | Build-time patches: cloaking + shared-token refresh |
+| `scripts/seed-auth.sh` | Rebuilds the `anthropic-oauth` entry in the ephemeral `auth.json` from `claude-*.json` |
 | `Dockerfile` | Clones + patches + builds auth2api, bakes watcher |
 
 ## Setup
@@ -45,6 +46,14 @@ persist across container restarts:
 mkdir -p "$PI_HOME/agent/auth2api"
 mounts+=(-v "$PI_HOME/agent/auth2api:/home/agent/.pi/agent/auth2api")
 ```
+
+That mount is what makes the login durable. `auth.json` is **not** mounted — it
+is seeded fresh into the ephemeral home each boot by `scripts/seed-auth.sh`,
+which rebuilds this provider's entry from the newest readable `claude-*.json`
+in the persisted directory above. The entry is only a stub (access/refresh copied
+from the token file, plus a 12h expiry pi accepts), so throwing it away costs
+nothing and no re-login is needed. See
+[usage.md](usage.md#credentials-the-authjson-trade-off).
 
 First login:
 

@@ -40,6 +40,23 @@ if [ -x /usr/local/bin/seed-trust.sh ]; then
   /usr/local/bin/seed-trust.sh || true
 fi
 
+# Generate a writable auth.json in the ephemeral home, from the read-only host
+# staging copy and/or the persisted auth2api token file. Nothing is mounted at
+# pi's real auth.json path, so pi's own writes (a /login, an OAuth refresh) can
+# never fail on a read-only mount, and can never reach the host's file.
+#
+# Before start-auth2api.sh: not required (the watcher polls for token files and
+# does not read auth.json), but the ordering matches the data flow -- token file
+# in, auth.json stub out -- and keeps the credential state settled before
+# anything reads it.
+if [ -x /usr/local/bin/seed-auth.sh ]; then
+  /usr/local/bin/seed-auth.sh || true
+fi
+# Consumed by seed-auth.sh above. Unset before exec so neither pi nor the agent
+# inherits a credential blob in its environment; `docker inspect` on the host
+# still shows it, which is unavoidable with -e.
+unset PA_AUTH_SEED
+
 # Start the auth2api watcher in a fully detached session.
 # It waits for token files in ~/.auth2api/ (written by the extension's
 # /login), then launches auth2api. Completely separate from pi's process

@@ -16,6 +16,10 @@ FAILED=0
 cleanup() {
   # pkgdir now lives in the repo, so an early exit would leave litter behind.
   if [ -n "${pkgdir:-}" ]; then rm -rf "$pkgdir"; fi
+  # Same for the auth-seed fixture dir, for the same reason.
+  if [ -n "${authdir:-}" ]; then rm -rf "$authdir"; fi
+  # ...and the pa-shaped-invocation fixture dir.
+  if [ -n "${pasim:-}" ]; then rm -rf "$pasim"; fi
   if [ "${KEEP:-0}" != "1" ]; then
     docker volume rm "$VOLUME" >/dev/null 2>&1 || true
   fi
@@ -261,6 +265,294 @@ out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" -w /tmp \
   ' 2>&1)"
 echo "$out" | grep -q TRUST_WRITABLE && echo "$out" | grep -q CWD_TRUSTED \
   && pass "trust.json seeded writable + pre-trusts project cwd" || fail "trust seed wrong: $out"
+
+# --- auth.json is seeded, never mounted at pi's real path -------------------
+#
+# pi WRITES auth.json (a completed /login; an OAuth refresh within 5 min of
+# expiry). The host file is therefore staged read-only at /opt/pa/auth.host.json
+# and seed-auth.sh copies it into the ephemeral home. These tests pin the two
+# properties that made that necessary: the seeded file must be WRITABLE, and the
+# anthropic-oauth entry must be reconstructible from the persisted auth2api
+# token file so a discarded container costs no re-login.
+
+# Same $(pwd) rule as pkgdir below: macOS TMPDIR is outside Docker Desktop's
+# shared paths and would mount as an empty dir.
+authdir="$(pwd)/.pa-smoke-auth.$$"
+rm -rf "$authdir"; mkdir -p "$authdir"
+cat > "$authdir/auth.host.json" <<'EOF'
+{ "smoke-provider": { "type": "api_key", "key": "$SMOKE_KEY_VAR" } }
+EOF
+chmod -R a+rX "$authdir"
+
+# 1. Staged host file -> writable 0600 copy in the ephemeral home, content intact.
+#    Mounted :ro exactly as the launcher does, so this also proves the seed does
+#    not try to write through to the host.
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  -v "$authdir/auth.host.json:/opt/pa/auth.host.json:ro" \
+  "$IMAGE_TAG" bash -lc '
+    t="$HOME/.pi/agent/auth.json"
+    test -w "$t" && echo AUTH_WRITABLE
+    echo "MODE=$(stat -c %a "$t")"
+    node -e "process.stdout.write(require(process.env.HOME+\"/.pi/agent/auth.json\")[\"smoke-provider\"].key)"
+    echo
+    test -w /opt/pa/auth.host.json && echo HOST_WRITABLE || echo HOST_READONLY
+  ' 2>/dev/null)"
+echo "$out" | grep -q AUTH_WRITABLE && echo "$out" | grep -q 'MODE=600' \
+  && echo "$out" | grep -qF '$SMOKE_KEY_VAR' && echo "$out" | grep -q HOST_READONLY \
+  && pass "auth.json seeded writable 0600 from ro staged host file" \
+  || fail "auth seed from host file wrong: $out"
+
+# 2. No sources at all -> NOTHING written. pi creates its own {} when it first
+#    needs one; writing an empty file here would mask a launcher problem. This is
+#    also the MOUNT_AUTH=0 and the never-logged-in-yet case.
+out="$(run_clean 'test -e "$HOME/.pi/agent/auth.json" && echo PRESENT || echo ABSENT')"
+echo "$out" | grep -q ABSENT \
+  && pass "no auth sources -> no auth.json written (pi creates its own)" \
+  || fail "auth.json created with no sources to seed from: $out"
+
+# 3. The oauth-only user: no host auth.json at all, just a persisted token file.
+#    The entry must be synthesized from nothing, with an expiry in the future.
+out="$(run_clean '
+    mkdir -p "$HOME/.pi/agent/auth2api"
+    cat > "$HOME/.pi/agent/auth2api/claude-smoke@example.com.json" <<TOK
+{"access_token":"acc-SMOKE","refresh_token":"ref-SMOKE","email":"smoke@example.com","expired":"2099-01-01T00:00:00.000Z"}
+TOK
+    rm -f "$HOME/.pi/agent/auth.json"
+    /usr/local/bin/seed-auth.sh
+    node -e "const a=require(process.env.HOME+\"/.pi/agent/auth.json\")[\"anthropic-oauth\"];
+      process.stdout.write([a.type,a.access,a.refresh,a.expires>Date.now()].join(\"|\"))"
+  ')"
+echo "$out" | grep -q 'oauth|acc-SMOKE|ref-SMOKE|true' \
+  && pass "anthropic-oauth entry rebuilt from persisted token file (no host auth.json)" \
+  || fail "oauth stub not synthesized from token file: $out"
+
+# 4. PA_AUTH_SEED beats the staged host file, AND a stale oauth entry carried in
+#    with it is replaced by the token file. That precedence is load-bearing: a
+#    seeded stub can name a refresh token auth2api has already rotated away, which
+#    is the "works for a while, then every request fails" bug in anthropic-oauth.md.
+#
+#    The seed value is a literal inside the inner command, NOT passed with -e: the
+#    entrypoint consumes PA_AUTH_SEED and unsets it before exec (test 7 covers
+#    that), so by the time this body runs the variable is already gone. The token
+#    file also has to exist before the seed runs, which the entrypoint's own pass
+#    cannot satisfy -- hence re-running the seed here.
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  -v "$authdir/auth.host.json:/opt/pa/auth.host.json:ro" \
+  "$IMAGE_TAG" bash -lc '
+    mkdir -p "$HOME/.pi/agent/auth2api"
+    cat > "$HOME/.pi/agent/auth2api/claude-smoke@example.com.json" <<TOK
+{"access_token":"acc-CURRENT","refresh_token":"ref-CURRENT","expired":"2099-01-01T00:00:00.000Z"}
+TOK
+    rm -f "$HOME/.pi/agent/auth.json"
+    export PA_AUTH_SEED="{\"from-env\":{\"type\":\"api_key\",\"key\":\"k\"},\"anthropic-oauth\":{\"type\":\"oauth\",\"access\":\"acc-STALE\",\"refresh\":\"ref-STALE\",\"expires\":1}}"
+    /usr/local/bin/seed-auth.sh
+    node -e "const a=require(process.env.HOME+\"/.pi/agent/auth.json\");
+      process.stdout.write([Object.keys(a).join(\",\"),a[\"anthropic-oauth\"].access].join(\" \"))"
+  ' 2>/dev/null)"
+echo "$out" | grep -q 'from-env' && ! echo "$out" | grep -q 'smoke-provider' \
+  && echo "$out" | grep -q 'acc-CURRENT' && ! echo "$out" | grep -q 'acc-STALE' \
+  && pass "PA_AUTH_SEED beats host file; token file beats a stale seeded oauth entry" \
+  || fail "auth seed precedence wrong: $out"
+
+# 5. A truncated NEWEST token file (auth2api crashed mid-rotation) must fall back
+#    to the previous readable one rather than forcing a re-login. Regression: the
+#    first version of seed-auth.sh only ever looked at the newest file and gave up.
+out="$(run_clean '
+    d="$HOME/.pi/agent/auth2api"; mkdir -p "$d"
+    cat > "$d/claude-good@example.com.json" <<TOK
+{"access_token":"acc-GOOD","refresh_token":"ref-GOOD","expired":"2099-01-01T00:00:00.000Z"}
+TOK
+    touch -d "2020-01-01" "$d/claude-good@example.com.json"
+    printf "{truncated" > "$d/claude-broken@example.com.json"
+    rm -f "$HOME/.pi/agent/auth.json"
+    /usr/local/bin/seed-auth.sh 2>/dev/null
+    node -e "process.stdout.write(require(process.env.HOME+\"/.pi/agent/auth.json\")[\"anthropic-oauth\"].access)"
+  ')"
+echo "$out" | grep -q 'acc-GOOD' \
+  && pass "corrupt newest token file falls back to previous readable one" \
+  || fail "corrupt token file not skipped: $out"
+
+# 6. THE regression this all exists for: pi persisting an OAuth refresh must not
+#    hit EACCES. Exercises pi's real AuthStorage against the seeded file, which is
+#    the exact call (credentials.modify) that died on a read-only mount with
+#    "Credential store modify failed for anthropic-oauth".
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  -v "$authdir/auth.host.json:/opt/pa/auth.host.json:ro" \
+  "$IMAGE_TAG" bash -lc '
+    node -e "
+      const { AuthStorage } = await import(\"/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js\");
+      const store = AuthStorage.create();
+      await store.modify(\"anthropic-oauth\", async () => ({ type: \"oauth\",
+        access: \"acc-REFRESHED\", refresh: \"ref-REFRESHED\", expires: Date.now() + 3600e3 }));
+      const back = await AuthStorage.create().read(\"anthropic-oauth\");
+      process.stdout.write(back.access === \"acc-REFRESHED\" ? \"MODIFY_OK\" : \"MODIFY_BAD\");
+    " 2>&1
+  ' 2>/dev/null)"
+echo "$out" | grep -q MODIFY_OK \
+  && pass "pi can persist an oauth refresh to the seeded auth.json (no EACCES)" \
+  || fail "pi cannot write seeded auth.json: $out"
+
+# 7. The entrypoint must consume PA_AUTH_SEED and then unset it, so a credential
+#    blob does not sit in the agent's own environment. (docker inspect on the host
+#    still shows it -- unavoidable with -e.)
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  -e 'PA_AUTH_SEED={"env-only":{"type":"api_key","key":"secret-should-not-leak"}}' \
+  "$IMAGE_TAG" bash -lc '
+    node -e "process.stdout.write(Object.keys(require(process.env.HOME+\"/.pi/agent/auth.json\")).join(\",\"))"
+    echo
+    env | grep -c "^PA_AUTH_SEED=" || true
+    printenv PA_AUTH_SEED >/dev/null 2>&1 && echo SEED_LEAKED || echo SEED_UNSET
+  ' 2>/dev/null)"
+echo "$out" | grep -q 'env-only' && echo "$out" | grep -q SEED_UNSET \
+  && pass "entrypoint seeds from PA_AUTH_SEED then unsets it" \
+  || fail "PA_AUTH_SEED not consumed/unset by entrypoint: $out"
+
+# 8. BACKWARD COMPATIBILITY, and the nastiest failure this script can have.
+#    An older launcher bind-mounts the host auth.json read-WRITE at pi's real path.
+#    seed-auth.sh must then treat what is already there as the base and leave the
+#    other credentials alone -- an early version reconstructed the file from the
+#    token file alone, which wrote through the bind mount and DESTROYED every other
+#    provider in the real file. Coworkers on an old launcher must be able to pull a
+#    new image safely.
+out="$(run_clean '
+    a="$HOME/.pi/agent/auth.json"; d="$HOME/.pi/agent/auth2api"; mkdir -p "$d"
+    cat > "$a" <<AUTH
+{ "openrouter": { "type": "api_key", "key": "sk-or-LEGACY" },
+  "openai": { "type": "api_key", "key": "sk-oai-LEGACY" } }
+AUTH
+    cat > "$d/claude-legacy@example.com.json" <<TOK
+{"access_token":"acc-LEGACY","refresh_token":"ref-LEGACY","expired":"2099-01-01T00:00:00.000Z"}
+TOK
+    /usr/local/bin/seed-auth.sh
+    node -e "const a=require(process.env.HOME+\"/.pi/agent/auth.json\");
+      process.stdout.write([a.openrouter&&a.openrouter.key,a.openai&&a.openai.key,
+        a[\"anthropic-oauth\"]&&a[\"anthropic-oauth\"].access].join(\"|\"))"
+  ')"
+echo "$out" | grep -q 'sk-or-LEGACY|sk-oai-LEGACY|acc-LEGACY' \
+  && pass "legacy rw-mounted auth.json: other credentials preserved, oauth added" \
+  || fail "seed clobbered a pre-existing auth.json: $out"
+
+# ...and with nothing to add it must not touch that file at all. Under a legacy
+# read-write mount every write lands on the host, so a no-op rewrite would churn
+# the real credentials file (and its mtime) on every single launch.
+out="$(run_clean '
+    a="$HOME/.pi/agent/auth.json"
+    printf "%s" "{ \"openrouter\": { \"type\": \"api_key\", \"key\": \"sk-or-LEGACY\" } }" > "$a"
+    before=$(md5sum "$a" | cut -d" " -f1)
+    /usr/local/bin/seed-auth.sh
+    after=$(md5sum "$a" | cut -d" " -f1)
+    [ "$before" = "$after" ] && echo UNCHANGED || echo REWRITTEN
+  ')"
+echo "$out" | grep -q UNCHANGED \
+  && pass "legacy rw-mounted auth.json left byte-identical when there is nothing to add" \
+  || fail "seed rewrote an unchanged auth.json: $out"
+
+rm -rf "$authdir"
+
+# --- the pa-shaped invocation: does the image honour the contract? -----------
+#
+# Not a test of `pa` (that lives in its own repo, and mounting its script here
+# would couple the two). These assert the IMAGE-side half of what `pa` sets up:
+# credentials staged read-only + forwarded env vars must actually reach the wire,
+# and sessions must land in the bind-mounted project. If any of this breaks, every
+# `pa` launch breaks, whatever the launcher does.
+
+pasim="$(pwd)/.pa-smoke-sim.$$"
+rm -rf "$pasim"; mkdir -p "$pasim/agent" "$pasim/proj"
+
+# A provider pointed at a loopback capture server, with its key held ONLY in an
+# env var -- both in the credential and in a custom auth header. This is the shape
+# that keeps secrets out of auth.json (see usage.md).
+cat > "$pasim/agent/models.json" <<'EOF'
+{ "providers": { "capture": {
+  "baseUrl": "http://127.0.0.1:9094", "api": "anthropic-messages",
+  "headers": { "Authorization": "Bearer $PA_SMOKE_KEY" },
+  "models": [{ "id": "smoke-model", "name": "Smoke", "reasoning": false, "input": ["text"],
+    "contextWindow": 1000, "maxTokens": 100,
+    "cost": { "input": 1, "output": 1, "cacheRead": 1, "cacheWrite": 1 } }] } } }
+EOF
+cat > "$pasim/agent/auth.host.json" <<'EOF'
+{ "capture": { "type": "api_key", "key": "$PA_SMOKE_KEY" } }
+EOF
+chmod -R a+rX "$pasim"
+
+# Mirrors how `pa` invokes docker: project bind-mounted at its REAL host path and
+# made the workdir, models.json + staged auth.json read-only, the secret forwarded
+# as an env var, --session-dir into the project, --approve, the baked skills dir,
+# and no-new-privileges as `pa` passes by default.
+#
+# The capture server self-terminates after 20s and pi is wrapped in `timeout`: an
+# earlier draft used `wait -n`, which waited on a server that listens forever and
+# hung the run.
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  --security-opt no-new-privileges \
+  -v "${VOLUME}:${MISE_MOUNT}" \
+  -v "$pasim/proj:$pasim/proj" --workdir "$pasim/proj" \
+  -v "$pasim/agent/models.json:/home/agent/.pi/agent/models.json:ro" \
+  -v "$pasim/agent/auth.host.json:/opt/pa/auth.host.json:ro" \
+  -e PA_SMOKE_KEY=sk-smoke-RESOLVED \
+  -e PI_OFFLINE=1 \
+  "$IMAGE_TAG" bash -lc '
+    node -e "
+      const http = require(\"http\"), fs = require(\"fs\");
+      const s = http.createServer((req, res) => {
+        fs.writeFileSync(\"/tmp/cap.txt\", \"HDR_AUTH=\" + (req.headers.authorization || \"none\") + \"\\n\");
+        res.writeHead(400, { \"content-type\": \"application/json\" });
+        res.end(JSON.stringify({ error: { message: \"captured\" } }));
+      }).listen(9094, \"127.0.0.1\");
+      setTimeout(() => { s.close(); process.exit(0); }, 20000);
+    " &
+    srv=$!
+    for i in $(seq 20); do (echo > /dev/tcp/127.0.0.1/9094) 2>/dev/null && break; sleep 0.2; done
+    timeout 30 pi --session-dir "$PWD/.pi-sessions" --approve --skill /opt/pa/skills \
+      --model capture/smoke-model -p "hello" >/dev/null 2>&1 || true
+    kill "$srv" 2>/dev/null || true
+    cat /tmp/cap.txt 2>/dev/null || echo "HDR_AUTH=nocapture"
+    ls "$PWD/.pi-sessions"/*.jsonl >/dev/null 2>&1 && echo SESSION_WRITTEN || echo SESSION_MISSING
+  ' 2>/dev/null)"
+echo "$out" | grep -q 'HDR_AUTH=Bearer sk-smoke-RESOLVED' \
+  && pass "pa-shaped run: staged auth.json + forwarded env var reaches the wire resolved" \
+  || fail "credential chain broken end to end: $out"
+echo "$out" | grep -q SESSION_WRITTEN \
+  && pass "pa-shaped run: session written into the bind-mounted project dir" \
+  || fail "session not written to project dir: $out"
+
+# The sharp edge of env-var credentials: an unresolvable value does NOT surface as
+# an auth error. pi drops the whole provider from its catalog, so the only symptom
+# is `No models match "<model>"` -- which is exactly what cost a debugging session
+# when a 1Password field resolved to an empty string. Pin it so the docs stay true.
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  -v "$pasim/agent/models.json:/home/agent/.pi/agent/models.json:ro" \
+  -v "$pasim/agent/auth.host.json:/opt/pa/auth.host.json:ro" \
+  -e PI_OFFLINE=1 \
+  "$IMAGE_TAG" bash -lc 'timeout 30 pi --list-models 2>/dev/null | grep -c smoke-model || true' 2>/dev/null)"
+echo "$out" | grep -q '^0$' \
+  && pass "unresolvable env-var key drops the provider from the catalog (no bogus key sent)" \
+  || fail "provider still listed with an unresolvable key: $out"
+
+# ...and it comes back when the var is present, so the check above is not merely
+# asserting a permanently broken provider.
+out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  -v "$pasim/agent/models.json:/home/agent/.pi/agent/models.json:ro" \
+  -v "$pasim/agent/auth.host.json:/opt/pa/auth.host.json:ro" \
+  -e PA_SMOKE_KEY=sk-smoke-RESOLVED -e PI_OFFLINE=1 \
+  "$IMAGE_TAG" bash -lc 'timeout 30 pi --list-models 2>/dev/null | grep -c smoke-model || true' 2>/dev/null)"
+echo "$out" | grep -q '^1$' \
+  && pass "provider appears in the catalog once its env var resolves" \
+  || fail "provider missing even with its var set: $out"
+
+# `docker run -e NAME` (no `=`) must inherit from the CLIENT environment. The pa
+# launcher relies on this to keep vault-resolved secrets out of its own argv, where
+# host `ps` would show them. Documented docker behaviour, but it is the one
+# assumption in that change only a real daemon can confirm.
+out="$(PA_SMOKE_INHERIT=inherited-value docker run --rm --user "${UID_TEST}:${UID_TEST}" \
+  -e PA_SMOKE_INHERIT \
+  "$IMAGE_TAG" bash -lc 'printf %s "${PA_SMOKE_INHERIT:-MISSING}"' 2>/dev/null)"
+echo "$out" | grep -q '^inherited-value$' \
+  && pass "docker -e NAME inherits from the client env (secret stays out of argv)" \
+  || fail "-e NAME did not inherit: $out"
+
+rm -rf "$pasim"
 
 run 'touch "$HOME/.npm/wtest" "$HOME/.pi/agent/npm/wtest" 2>&1 && echo NPM_WRITABLE' | grep -q NPM_WRITABLE \
   && pass "npm dirs writable (pi can install extensions)" || fail "npm dirs not writable for arbitrary uid"

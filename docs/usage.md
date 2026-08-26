@@ -55,7 +55,7 @@ on the next launch. See
 | `~/.pi/agent/settings.json`        | `/opt/pa/settings.host.json`                     | ro   | staged, then seeded (see below) |
 | `~/.pi/agent/models.json`          | same                                             | ro   | model config |
 | `~/.pi/agent/trust.json`           | *(not mounted)*                                  | —    | generated writable in-container (see below) |
-| `~/.pi/agent/auth.json` (optional) | same                                             | ro   | model auth token (see below) |
+| `~/.pi/agent/auth.json` (optional) | `/opt/pa/auth.host.json`                         | ro   | staged, then seeded into the ephemeral home (see below) |
 | `~/.pi/agent/AGENTS.md` (if present) | same                                           | ro   | your global context file |
 | `~/.pi/agent/CLAUDE.md` (if present) | same                                           | ro   | your global context file |
 | `~/.pi/agent/SYSTEM.md` (if present) | same                                           | ro   | replaces pi's system prompt (opt out: `NO_MOUNT_SYSTEM=1`) |
@@ -328,7 +328,12 @@ MY_ENV_VAR=some-value
 MY_OTHER_KEY=whatever
 ```
 
-Simple, but the secret sits in a plaintext file — fine for low-value keys.
+Simple, but the secret sits in a plaintext file — fine for low-value keys. A line
+with **no `=`** (just `MY_VAR`) means "inherit this one from my shell".
+
+Because these values are plaintext on disk anyway, they are passed as
+`-e KEY=value`, which makes them visible in `ps` output on the host while the
+container runs. Use `pa.openv` for anything you would mind being seen there.
 
 ### 2. `~/.pi/agent/pa.openv` — live 1Password lookups (preferred for secrets)
 
@@ -340,7 +345,7 @@ ENVNAME=item:field:vault
 ```
 
 For each line `pa` runs `op item get --reveal <item> --fields label=<field>`
-(adding `--vault <vault>` when given) and forwards the result as `-e`. The
+(adding `--vault <vault>` when given) and forwards the result. The
 secret is pulled **live at launch** and never stored on disk. Requires the
 1Password CLI (`op`) to be installed and signed in; lines are skipped with a
 warning if resolution fails. Example:
@@ -350,9 +355,41 @@ MY_ENV_VAR=my-1password-item:credential
 MY_OTHER_KEY=another-item:password:Work
 ```
 
+Resolved values are forwarded as `-e NAME` (no `=`), so docker inherits them from
+`pa`'s own environment and **the secret never appears in the host's `ps` output**.
+(`docker inspect` on the container still shows it — unavoidable with `-e`, and
+anyone who can reach the docker socket already owns the host.)
+
+Two file-format requirements, both of which fail quietly if ignored:
+
+- **LF endings, and a trailing newline.** CRLF puts a `\r` inside the value and
+  the lookup fails. macOS has no `cat -A`; inspect with `cat -etv` or
+  `sed -n l` — every line must end in `$` with no `^M` before it.
+- **Append carefully.** If the file does not end in a newline, `cat >> pa.openv`
+  welds your first new line onto the old last one, and that variable silently
+  ceases to exist under the name you expect.
+
+`field` is matched against the field's **label**. A label that matches a
+different, *empty* field is the nastiest failure: `op` exits 0, so it looks like
+a success. `pa` therefore warns separately and refuses to forward it —
+
+```
+pa: warning: MY_ENV_VAR resolved EMPTY from 1Password (item, label=credential) -- wrong field label? not forwarding it
+```
+
+— because an empty value is *worse* than a missing one: pi treats `"$VAR"`
+resolving to `""` as unresolvable and drops the whole provider from its catalog,
+so the only symptom is `Warning: No models match "<your-model>"` with nothing
+about credentials anywhere.
+
 Both are additive; the openv source overrides `pa.env` for the same var (Docker
 keeps the last `-e`). Neither mounts a secret file into the container, and no
 secret is baked into the image.
+
+This is also the recommended way to hold **model credentials**: an `auth.json`
+API key can be written as `"$MY_VAR"` and resolved from a var forwarded here, so
+the host file carries no secret. See
+[Credentials: the `auth.json` trade-off](#credentials-the-authjson-trade-off).
 
 ## Private extensions and skills
 
@@ -456,12 +493,130 @@ orthogonal, the same way the baked `APPEND_SYSTEM.base.md` is kept separate.
 
 ## Credentials: the `auth.json` trade-off
 
-By default `pa` mounts `~/.pi/agent/auth.json` read-only so the agent can talk
-to a model immediately. This shares your model provider token with the
-container. For a disposable sandbox this is usually fine (the isolation goal is
-about *installs*, not credentials), but if you want the container to have no
-access to your host credentials, run with `MOUNT_AUTH=0` and provide the
-sandbox its own auth.
+`pa` mounts `~/.pi/agent/auth.json` **read-only at a staging path**
+(`/opt/pa/auth.host.json`) and the entrypoint's `seed-auth.sh` copies it to a
+writable `~/.pi/agent/auth.json` in the ephemeral home. **Nothing is mounted at
+pi's real `auth.json` path**, so the container cannot write your host file, and
+its own copy dies with the container.
+
+### Why seeded rather than mounted
+
+Because pi writes that file. Two paths, and only two:
+
+- **`/login`** — a completed login is persisted to `auth.json`.
+- **OAuth refresh** — a stored `oauth` credential within five minutes of
+  `expires` is refreshed and the rotated token written back.
+
+Mounting the host file at the real path forced a choice between two bad options:
+
+- **`:ro`** — reads work (pi's lock file lands in the directory, not the file), so
+  an API-key-only setup looks healthy for weeks, then dies the day you log into an
+  OAuth provider:
+
+  ```
+  Credential store modify failed for anthropic-oauth: EACCES: permission denied,
+  open '/home/agent/.pi/agent/auth.json'
+  ```
+
+- **`rw`** — works, but a disposable container can rewrite the credentials file on
+  the host it was handed.
+
+Seeding avoids both: there is no host file at that path to fail on or corrupt.
+Same approach as `settings.json` and `trust.json`.
+
+### OAuth still survives across containers
+
+For **`anthropic-oauth`** nothing is lost. Its real tokens live in
+`~/.pi/agent/auth2api/claude-<email>.json`, which is mounted **read-write and
+persists** — auth2api owns refreshing them. The `auth.json` entry is only a stub
+(access/refresh copied from that file, plus an expiry pi accepts), so
+`seed-auth.sh` rebuilds it from the newest readable `claude-*.json` on every
+boot. No re-login.
+
+pi-**native** OAuth providers (anthropic subscription, gemini) store their tokens
+*only* in `auth.json`, so those do need a fresh `/login` per container.
+
+`seed-auth.sh` takes its base from the first of:
+
+1. `PA_AUTH_SEED` — the file's *content* in an env var, so a launcher can resolve
+   it from a vault without it ever touching disk on the host. The entrypoint
+   `unset`s it before `exec`, so neither pi nor the agent inherits it.
+2. `/opt/pa/auth.host.json` — the staged host file.
+3. An `auth.json` already present at the target — see *Older launchers* below.
+
+With none of them, no file is written: pi creates its own `{}` when it first needs
+to. The `anthropic-oauth` stub is layered on top of whichever base was used, and
+overwrites any `anthropic-oauth` entry that came in with it — a stub from the
+host may name a token auth2api has already rotated away, while the token file is
+by definition current.
+
+### Older launchers keep working
+
+A `pa` old enough to bind-mount `auth.json` **read-write at pi's real path** is
+still fine: the file it mounts is found at the target and used as the base, so
+nothing is lost, and it is only rewritten when there is genuinely something to add
+(an `anthropic-oauth` entry rebuilt from the token file). With nothing to add it is
+left byte-identical, because under that mount every write lands on the host's own
+file.
+
+So upgrading the launcher and the image is not a coordinated flag day:
+
+| Launcher | Image | Result |
+|---|---|---|
+| old (rw at real path) | old | as it always was |
+| **old** (rw at real path) | **new** | works; host file used as the base, preserved, only touched when the oauth entry changes |
+| **new** (ro staging) | **old** | works; the launcher stages the file into the ephemeral home itself |
+| new (ro staging) | new | the arrangement described above |
+
+### Keeping the secret out of the file (recommended)
+
+pi resolves an `api_key` credential's `key` at read time, so the value need not
+be in the file at all:
+
+| Form | Meaning |
+|------|---------|
+| `"sk-abc…"` | literal |
+| `"$MY_KEY"` / `"${MY_KEY}"` | environment variable (`$$` escapes a literal `$`) |
+| `"!some command"` | run in a shell, use trimmed stdout (cached for the process) |
+
+So point `auth.json` at env vars and let `pa` fill them from 1Password at
+launch (see [Forwarding secrets / env vars](#forwarding-secrets--env-vars)):
+
+```json
+{
+  "openrouter": { "type": "api_key", "key": "$OPENROUTER_API_KEY" }
+}
+```
+
+```
+# ~/.pi/agent/pa.openv
+OPENROUTER_API_KEY=my-1password-item:credential
+```
+
+Now the host `auth.json` holds **no secret** — it is a list of variable names,
+safe to commit — and the real value is pulled live from your vault into the
+container's environment, never written to disk on either side. Unresolvable
+vars make the provider unavailable with a clear error rather than sending a
+bogus key.
+
+This works for `api_key` credentials only. OAuth credentials store
+`access`/`refresh`/`expires` literally and are rewritten on refresh, which is
+what the seeding above is for.
+
+Provider **headers** in `models.json` go through the same resolver, so a provider
+that needs a custom auth header can interpolate the same variable:
+
+```json
+"headers": { "Authorization": "Bearer $OPENROUTER_API_KEY" }
+```
+
+Note a provider still needs its `auth.json` entry to exist — a header alone
+leaves it `credentials_not_configured`.
+
+### Or don't share credentials at all
+
+`MOUNT_AUTH=0` stages nothing — no read, no write, not even the staging mount —
+and the sandbox then needs its own auth inside.
 
 ## Inside the container
 
