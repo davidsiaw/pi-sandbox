@@ -190,7 +190,21 @@ run 'mise settings get idiomatic_version_file_enable_tools' | grep -q 'ruby' \
 # shim to call and the honest result is "command not found". Only the config is
 # baked into the image; the runtime is not. Assert the config resolves, and
 # report the install state rather than failing on it.
-run 'mise current ruby 2>/dev/null | tail -1' | grep -q '^3\.4' \
+#
+# MISE_OFFLINE=1 is load-bearing, not tidiness. Expanding the partial pin "3.4"
+# into a concrete version needs the ruby-build definition list, which mise clones
+# into $MISE_CACHE_DIR -- in the EPHEMERAL home, so cold on every container. When
+# that fetch fails or is rate-limited (a datacenter IP hits GitHub's anonymous
+# limit readily) mise degrades to:
+#
+#   mise WARN  Failed to resolve tool version list for ruby: ...
+#   mise WARN  Plugin ruby does not have a version set
+#
+# with an EMPTY stdout and exit 0 -- so this failed intermittently for a reason
+# that has nothing to do with the image. Offline, mise answers from config alone:
+# "3.4" on a cold cache, "3.4.7" on a warm one. Both satisfy ^3\.4, and both prove
+# the only thing under test: the baked pin reaches the resolver.
+run 'MISE_OFFLINE=1 mise current ruby 2>/dev/null | tail -1' | grep -q '^3\.4' \
   && pass "system default resolves to a 3.4.x" \
   || fail "system default does not resolve to 3.4.x"
 
@@ -474,7 +488,16 @@ EOF
 cat > "$pasim/agent/auth.host.json" <<'EOF'
 { "capture": { "type": "api_key", "key": "$PA_SMOKE_KEY" } }
 EOF
+# The fixture dir is created by the HOST user; the container runs as UID_TEST,
+# so everything it must read needs a+rX. The project dir additionally needs to be
+# WRITABLE: --session-dir "$PWD/.pi-sessions" makes pi mkdir inside the workdir
+# during startup, and pi does not degrade there -- SessionManager's mkdirSync
+# throws EACCES and the process dies before it ever builds a request. That looked
+# like a broken credential chain (HDR_AUTH=nocapture) plus SESSION_MISSING, when
+# in fact pi never ran. Real `pa` never sees this: it runs the container as the
+# host uid, which owns the project.
 chmod -R a+rX "$pasim"
+chmod -R a+rwX "$pasim/proj"
 
 # Mirrors how `pa` invokes docker: project bind-mounted at its REAL host path and
 # made the workdir, models.json + staged auth.json read-only, the secret forwarded
@@ -505,10 +528,18 @@ out="$(docker run --rm --user "${UID_TEST}:${UID_TEST}" \
     srv=$!
     for i in $(seq 20); do (echo > /dev/tcp/127.0.0.1/9094) 2>/dev/null && break; sleep 0.2; done
     timeout 30 pi --session-dir "$PWD/.pi-sessions" --approve --skill /opt/pa/skills \
-      --model capture/smoke-model -p "hello" >/dev/null 2>&1 || true
+      --model capture/smoke-model -p "hello" >/dev/null 2>/tmp/pi.err || true
     kill "$srv" 2>/dev/null || true
+    # When pi dies during startup nothing reaches the capture server, and the two
+    # assertions below then blame the credential chain / the session dir for what
+    # is really a crash. Surface the reason instead of hiding it.
+    [ -s /tmp/pi.err ] && echo "PI_STDERR=$(tail -c 400 /tmp/pi.err | tr "\n" " ")"
     cat /tmp/cap.txt 2>/dev/null || echo "HDR_AUTH=nocapture"
     ls "$PWD/.pi-sessions"/*.jsonl >/dev/null 2>&1 && echo SESSION_WRITTEN || echo SESSION_MISSING
+    # Anything pi wrote here is owned by UID_TEST, not by the host user who has to
+    # rm -rf the fixture afterwards. On a Linux host (no uid-remapping bind mount)
+    # that leaves a dir the host cannot empty.
+    chmod -R a+rwX "$PWD/.pi-sessions" 2>/dev/null || true
   ' 2>/dev/null)"
 echo "$out" | grep -q 'HDR_AUTH=Bearer sk-smoke-RESOLVED' \
   && pass "pa-shaped run: staged auth.json + forwarded env var reaches the wire resolved" \
