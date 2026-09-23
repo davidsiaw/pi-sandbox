@@ -116,6 +116,49 @@ independent halves:
 Not done: a cross-container refresh lock. With (1) the collision window is
 ~1s per 4h rotation, and with (2) the loser costs nothing.
 
+## Model list
+
+`loadModels()` builds the provider's catalog from the JSON model catalogs
+shipped inside pi (`…/pi-ai/dist/providers/data/`), which are refreshed on
+every pi release. It unions the `anthropic-messages` section of **all** of
+them — not just `anthropic.json` — because the aggregator catalogs
+(`openrouter`, `vercel-ai-gateway`, `github-copilot`, `cloudflare-ai-gateway`,
+`opencode`) often list a new Claude a release earlier. Ids are mapped back to
+Anthropic API form (`anthropic/claude-opus-5.5` → `claude-opus-5-5`);
+`anthropic.json` is merged first, so its cost/limits win and the others only
+add models it lacks.
+
+Everything in this list is sent verbatim to `api.anthropic.com`, so ids are
+filtered to `claude-<family>-<version>` shape — aggregator-only aliases
+(`claude-3-haiku`, `~anthropic/claude-*-latest`, `:batch` variants) would
+otherwise appear in `/model` and then 404. `claude-sonnet-4` passes that shape
+test but is not a real API id, so it is denied explicitly.
+
+A model newer than the pi release baked into the image still will not appear:
+rebuild (`PI_VERSION=latest`) to pick up the catalogs.
+
+## Claude Code version gate
+
+Anthropic gates new models on the Claude Code version auth2api impersonates.
+Too old, and only the *new* model fails:
+
+```
+400 {"type":"error","error":{"type":"invalid_request_error",
+  "message":"Claude Code 2.1.88 does not support this model; version 2.1.280
+  or newer is required...","details":{"error_code":"claude_code_version_too_old"}}}
+```
+
+auth2api's built-in default is `2.1.88`, so `scripts/start-auth2api.sh` pins
+`cloaking.cli-version` in the generated `config.yaml` instead. Override with
+`AUTH2API_CLI_VERSION`; use a version that really shipped, since the value also
+feeds the billing-header fingerprint. The config is written at boot, so an
+already-running container needs a restart to pick up a change.
+
+Not fixed here: auth2api also hardcodes `X-Stainless-Package-Version: 0.74.0`,
+the SDK version matching CLI 2.1.88. It is not part of the gate, and the real
+CLI ships as a native binary, so the version a given release bundles cannot be
+read off npm — guessing it would make the fingerprint worse, not better.
+
 ## Usage status bar
 
 Polls `api.anthropic.com/api/oauth/usage` (harshly rate-limited — cached
@@ -140,6 +183,7 @@ to stderr/stdout, which would corrupt pi's TUI.
 |---------|---------|---------|
 | `AUTH2API_URL` | `http://127.0.0.1:8317` | Proxy endpoint |
 | `AUTH2API_KEY` | `pa-anthropic-oauth-local` | Key pi sends to auth2api |
+| `AUTH2API_CLI_VERSION` | `2.1.280` | Claude Code version impersonated (model version gate) |
 
 ## Updating auth2api
 

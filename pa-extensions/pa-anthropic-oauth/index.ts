@@ -274,44 +274,117 @@ function getBaseUrl(): string {
   return process.env.AUTH2API_URL || "http://127.0.0.1:8317";
 }
 
-function loadModels(): ProviderModelConfig[] {
-  const catalogPath = path.join(
-    "/usr/lib/node_modules/@earendil-works/pi-coding-agent",
-    "node_modules/@earendil-works/pi-ai/dist/providers/data/anthropic.json",
-  );
-  let raw: string;
+/**
+ * Model catalogs shipped with pi (one JSON per provider, refreshed on every pi
+ * release). `anthropic.json` is authoritative for the direct Anthropic API, but
+ * it is not always the first list to learn about a new model -- the aggregator
+ * catalogs (openrouter, vercel-ai-gateway, github-copilot, cloudflare,
+ * opencode) carry the same models under their own ids, and in practice one of
+ * them lands a release ahead. So instead of reading anthropic.json alone we
+ * union every catalog's `anthropic-messages` section, mapping ids back to
+ * Anthropic API form -- `anthropic/claude-opus-5.5` -> `claude-opus-5-5`.
+ *
+ * anthropic.json is merged FIRST, so wherever catalogs disagree about cost or
+ * limits, its numbers win; the others only ever contribute models it lacks.
+ */
+const CATALOG_DIR = path.join(
+  "/usr/lib/node_modules/@earendil-works/pi-coding-agent",
+  "node_modules/@earendil-works/pi-ai/dist/providers/data",
+);
+const PRIMARY_CATALOG = "anthropic.json";
+
+/**
+ * Anthropic API model ids: family + version, optionally dated.
+ * Deliberately strict -- everything reaching this provider is sent verbatim to
+ * api.anthropic.com, so an id shaped like an aggregator alias (`claude-3-haiku`,
+ * `~anthropic/claude-opus-latest`) is worse than a missing entry: it shows up in
+ * /model and then 404s.
+ */
+const ANTHROPIC_ID = /^claude-(opus|sonnet|haiku|fable)-\d[\d-]*$/;
+
+/**
+ * Ids that pass the shape test but the API does not accept. Aggregators list
+ * Sonnet 4 unversioned; Anthropic only takes `claude-sonnet-4-0` or the dated
+ * id. Add to this set rather than tightening the regex -- requiring two version
+ * groups would also drop legitimate ids like `claude-opus-5`.
+ */
+const NOT_ON_ANTHROPIC = new Set(["claude-sonnet-4"]);
+
+interface CatalogModel {
+  id?: string;
+  name?: string;
+  reasoning?: boolean;
+  input?: string[];
+  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  contextWindow?: number;
+  maxTokens?: number;
+}
+
+/** Catalog id -> Anthropic API id, or null if it is not one we can send. */
+function toAnthropicId(raw: string): string | null {
+  if (raw.includes(":")) return null; // ":batch" and other endpoint variants
+  let id = raw.replace(/^~/, ""); // vercel-ai-gateway alias marker
+  const slash = id.indexOf("/");
+  if (slash >= 0) {
+    if (!id.slice(0, slash).startsWith("anthropic")) return null; // other vendors
+    id = id.slice(slash + 1);
+  }
+  id = id.replace(/\./g, "-"); // claude-opus-5.5 -> claude-opus-5-5
+  if (!ANTHROPIC_ID.test(id) || NOT_ON_ANTHROPIC.has(id)) return null;
+  return id;
+}
+
+function readCatalog(file: string): Record<string, CatalogModel> {
   try {
-    raw = fs.readFileSync(catalogPath, "utf8");
+    const parsed = JSON.parse(fs.readFileSync(path.join(CATALOG_DIR, file), "utf8")) as {
+      "anthropic-messages"?: Record<string, CatalogModel>;
+    };
+    return parsed["anthropic-messages"] ?? {};
   } catch {
-    log("anthropic.json not found");
+    return {}; // not every file in the dir is a catalog we can parse
+  }
+}
+
+function loadModels(): ProviderModelConfig[] {
+  let files: string[];
+  try {
+    files = fs.readdirSync(CATALOG_DIR).filter((f) => f.endsWith(".json"));
+  } catch {
+    log(`Model catalogs not readable at ${CATALOG_DIR}`);
     return [];
   }
+  files.sort((a, b) => Number(b === PRIMARY_CATALOG) - Number(a === PRIMARY_CATALOG));
 
-  const parsed = JSON.parse(raw) as {
-    "anthropic-messages": Record<
-      string,
-      {
-        id: string;
-        name: string;
-        reasoning: boolean;
-        input: string[];
-        cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-        contextWindow: number;
-        maxTokens: number;
-      }
-    >;
-  };
+  const byId = new Map<string, ProviderModelConfig>();
+  const borrowed: string[] = [];
 
-  const models = Object.values(parsed["anthropic-messages"]).map((m) => ({
-    id: m.id,
-    name: m.name,
-    reasoning: m.reasoning,
-    input: m.input,
-    cost: m.cost,
-    contextWindow: m.contextWindow,
-    maxTokens: m.maxTokens,
-  }));
-  log(`Loaded ${models.length} models`);
+  for (const file of files) {
+    for (const [key, m] of Object.entries(readCatalog(file))) {
+      const id = toAnthropicId(m.id ?? key);
+      if (!id || byId.has(id)) continue;
+      // Cost/limits drive pi's accounting and context handling. A catalog entry
+      // without them is unusable, and guessing would misreport spend.
+      if (!m.cost || !m.contextWindow || !m.maxTokens) continue;
+      byId.set(id, {
+        id,
+        // Aggregators prefix the vendor: "Anthropic: Claude Opus 5.5".
+        name: (m.name ?? id).replace(/^Anthropic:\s*/, ""),
+        reasoning: m.reasoning ?? false,
+        // ProviderModelConfig only knows these two; catalogs also list "file".
+        input: (m.input ?? ["text"]).filter((i) => i === "text" || i === "image"),
+        cost: m.cost,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+      });
+      if (file !== PRIMARY_CATALOG) borrowed.push(`${id} (${file})`);
+    }
+  }
+
+  const models = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  log(
+    `Loaded ${models.length} models from ${files.length} catalogs` +
+      (borrowed.length ? `; not in ${PRIMARY_CATALOG}: ${borrowed.join(", ")}` : ""),
+  );
   return models;
 }
 
