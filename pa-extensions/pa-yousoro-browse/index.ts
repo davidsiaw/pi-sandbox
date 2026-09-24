@@ -53,7 +53,7 @@ import {
 	truncateHead,
 	writeCache,
 } from "../_shared/cache.ts";
-import { cloakAvailable, cloakDumpDom, titleOf } from "../_shared/cloak.ts";
+import { cloakAvailable, cloakDumpDom, cloakFetchLive, titleOf } from "../_shared/cloak.ts";
 import { htmlToMarkdown, htmlToText } from "../_shared/html-to-markdown.ts";
 import { domToMarkdown } from "./markdown.ts";
 import {
@@ -109,9 +109,51 @@ interface FetchResult {
 	html: string;
 	extracted?: ExtractedItem[];
 	/** Which fetcher produced the content that is being returned. */
-	engine: "yousoro" | "cloakbrowser";
+	engine: "yousoro" | "cloakbrowser" | "cloakbrowser-live";
 	/** Set when escalation was attempted but could not be used. */
 	escalationNote?: string;
+}
+
+// Shared by the yousoro page and the live-CloakBrowser page (tier 3), so
+// `extract` works on whichever page actually got through.
+// biome-ignore lint/suspicious/noExplicitAny: playwright page
+async function extractFrom(page: any, selector: string, attrName?: string): Promise<ExtractedItem[]> {
+	return page.$$eval(
+		selector,
+		(els: Element[], attrName: string | undefined) =>
+			els
+				.map((el) => {
+					const text = (el as HTMLElement).innerText?.trim() ?? "";
+					if (!attrName) return { text };
+					// For href/src, prefer the resolved absolute URL from the
+					// live property (element.href) over the raw attribute.
+					// biome-ignore lint/suspicious/noExplicitAny: dynamic prop access
+					const live = (el as any)[attrName];
+					const attr =
+						typeof live === "string" && live
+							? live
+							: (el.getAttribute(attrName) ?? undefined);
+					return { text, attr };
+				})
+				// Keep items that have either visible text or the requested attr.
+				.filter((it) => it.text || it.attr),
+		attrName,
+	);
+}
+
+// Render a live page in the requested format. innerText is flat: it loses
+// headings, list nesting and every link URL. markdown keeps them, at the cost
+// of running a DOM walk in the page.
+// biome-ignore lint/suspicious/noExplicitAny: playwright page
+async function renderPage(page: any, format: FetchOptions["format"]): Promise<{ html: string; text: string }> {
+	const html: string = await page.content();
+	const text: string =
+		format === "html"
+			? html
+			: format === "markdown"
+				? await page.evaluate(domToMarkdown)
+				: await page.evaluate(() => document.body?.innerText ?? "");
+	return { html, text };
 }
 
 async function yousoroFetch(
@@ -182,6 +224,7 @@ async function yousoroFetch(
 			// leaving challenge <script> tags in the DOM of the cleared page.
 			let title = await page.title();
 			let vtext = await visibleText(page);
+			let turnstileHeld = false;
 
 			// Cloudflare "403-then-redirect" interstitial: it serves the challenge
 			// first (often HTTP 403), runs its JS fingerprint check, and redirects
@@ -192,6 +235,12 @@ async function yousoroFetch(
 				vtext = await waitOutChallenge(page, opts.challengeWaitMs, onProgress);
 				title = await page.title();
 				status = looksChallenge(title, vtext) ? status : 200;
+				// A Turnstile widget still up after the wait (and its clicks) is a
+				// fingerprint verdict on THIS engine; a second attempt sees the same
+				// widget. Measured on icy-veins: 20s + 6s backoff + 20s, for nothing.
+				turnstileHeld =
+					looksChallenge(title, vtext) &&
+					page.frames().some((f: { url(): string }) => f.url().includes("challenges.cloudflare.com"));
 			}
 
 			blocked = looksBlocked(status, vtext) || looksChallenge(title, vtext);
@@ -201,7 +250,7 @@ async function yousoroFetch(
 			// Retrying an IP-reputation verdict or a human-solvable puzzle returns the
 			// identical page, so stop after the first look and let escalation (a
 			// different engine, different fingerprint) be the thing that gets tried.
-			if (looksHopeless(vtext)) {
+			if (looksHopeless(vtext) || turnstileHeld) {
 				onProgress("Blocked in a way retrying cannot fix; not backing off.");
 				break;
 			}
@@ -233,39 +282,11 @@ async function yousoroFetch(
 
 		const title = await page.title();
 		const finalUrl = page.url();
-		// innerText is flat: it loses headings, list nesting and every link URL.
-		// markdown keeps them, at the cost of running a DOM walk in the page.
-		const html: string = await page.content();
-		const text: string =
-			opts.format === "html"
-				? html
-				: opts.format === "markdown"
-					? await page.evaluate(domToMarkdown)
-					: await page.evaluate(() => document.body?.innerText ?? "");
+		const { html, text } = await renderPage(page, opts.format);
 
 		let extracted: ExtractedItem[] | undefined;
 		if (opts.extract) {
-			extracted = await page.$$eval(
-				opts.extract,
-				(els: Element[], attrName: string | undefined) =>
-					els
-						.map((el) => {
-							const text = (el as HTMLElement).innerText?.trim() ?? "";
-							if (!attrName) return { text };
-							// For href/src, prefer the resolved absolute URL from the
-							// live property (element.href) over the raw attribute.
-							// biome-ignore lint/suspicious/noExplicitAny: dynamic prop access
-							const live = (el as any)[attrName];
-							const attr =
-								typeof live === "string" && live
-									? live
-									: (el.getAttribute(attrName) ?? undefined);
-							return { text, attr };
-						})
-						// Keep items that have either visible text or the requested attr.
-						.filter((it) => it.text || it.attr),
-				opts.extractAttr,
-			);
+			extracted = await extractFrom(page, opts.extract, opts.extractAttr);
 		}
 
 		return {
@@ -511,9 +532,47 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 						// No live page here, so render from the string and re-run the same
 						// visible-text detection to see whether cloak got further.
 						const readable = htmlToText(html);
-						const stillBlocked =
-							looksChallenge(titleOf(html), readable) || looksBlocked(null, readable);
-						if (stillBlocked) {
+						const dumpChallenge = looksChallenge(titleOf(html), readable);
+						const stillBlocked = dumpChallenge || looksBlocked(null, readable);
+						if (stillBlocked && dumpChallenge) {
+							// TIER 3. --dump-dom can only ever capture a challenge page (it
+							// snapshots at first load), so drive the same binary live, wait
+							// the challenge out and click Turnstile. See cloakFetchLive. Only
+							// for CHALLENGES: a hard block cannot be waited or clicked out of.
+							onProgress(
+								"CloakBrowser --dump-dom got a challenge page; retrying live (wait + Turnstile click)...",
+							);
+							const live = await cloakFetchLive(
+								chromium,
+								{
+									url: result.finalUrl,
+									challengeWaitMs: params.challenge_wait_ms ?? 25000,
+								},
+								onProgress,
+								async (page) => ({
+									...(await renderPage(page, format)),
+									extracted: params.extract
+										? await extractFrom(page, params.extract, params.extract_attr)
+										: undefined,
+								}),
+							);
+							if (live.blocked) {
+								result.escalationNote =
+									"CloakBrowser was tried automatically, both as a DOM dump and live " +
+									"(waiting out the challenge and clicking Turnstile), and was ALSO " +
+									"blocked, so this site cannot be read from this sandbox. Find another " +
+									"source rather than retrying either tool.";
+							} else {
+								result.text = live.read.text;
+								result.html = live.read.html;
+								result.extracted = live.read.extracted;
+								result.title = live.title;
+								result.finalUrl = live.finalUrl;
+								result.status = live.status;
+								result.blocked = false;
+								result.engine = "cloakbrowser-live";
+							}
+						} else if (stillBlocked) {
 							result.escalationNote =
 								"CloakBrowser was tried automatically and was ALSO blocked, so this " +
 								"site cannot be read from this sandbox. Find another source rather " +
@@ -554,15 +613,18 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 				result.engine === "cloakbrowser"
 					? `Status: n/a (CloakBrowser reports none; yousoro saw ${result.status ?? "unknown"})`
 					: `Status: ${result.status ?? "unknown"}`;
+			const engineLine =
+				result.engine === "cloakbrowser"
+					? "cloakbrowser (yousoro was blocked; escalated automatically)"
+					: result.engine === "cloakbrowser-live"
+						? "cloakbrowser-live (yousoro and the CloakBrowser DOM dump were blocked; " +
+							"escalated automatically, challenge cleared live)"
+						: "yousoro";
 			const header =
 				`URL: ${result.finalUrl}\n` +
 				`${statusLine}  Attempts: ${result.attempts}  Blocked: ${result.blocked}\n` +
 				`Title: ${result.title}\n` +
-				`Format: ${format}  Engine: ${
-					result.engine === "cloakbrowser"
-						? "cloakbrowser (yousoro was blocked; escalated automatically)"
-						: "yousoro"
-				}\n`;
+				`Format: ${format}  Engine: ${engineLine}\n`;
 
 			// Cache the COMPLETE result before building the preview, so nothing the
 			// preview drops is lost. A cache failure must not fail the fetch: the

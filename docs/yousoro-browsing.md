@@ -262,14 +262,51 @@ Format: markdown  Engine: cloakbrowser (yousoro was blocked; escalated automatic
 - The header always names the engine, so a reader knows what produced the bytes.
 - CloakBrowser reports no HTTP status, so the status is attributed to the failed
   yousoro attempt rather than printed next to `Blocked: false` as if it applied.
-- `extract` results are **dropped** on escalation: they matched the blocked page,
-  not the content now returned. Re-run with the same selector to extract from it.
+- `extract` results are **dropped** on a tier-2 escalation: they matched the
+  blocked page, not the content now returned. Re-run with the same selector to
+  extract from it. (Tier 3 has a live page and re-runs `extract` itself.)
 - `escalate=false` turns it off; the blocked output then names `cloak_browse` and
   the URL explicitly, so the model has a concrete next step either way.
 
-If the escalated fetch is *also* blocked, the result says both engines failed and
-to stop retrying — that is a genuinely unreachable site, not a tool choice
-problem.
+### Tier 3: live CloakBrowser, for challenges the DOM dump cannot pass
+
+Escalation is three tiers, cheapest first:
+
+| Tier | Engine header | What it is | Runs when |
+|---|---|---|---|
+| 1 | `yousoro` | Playwright Chromium + JS stealth; waits out challenges, clicks Turnstile | always |
+| 2 | `cloakbrowser` | CloakBrowser `--dump-dom` (~1s, no CDP attached) | tier 1 blocked |
+| 3 | `cloakbrowser-live` | CloakBrowser driven by Playwright; waits out the challenge, clicks Turnstile | tier 2 returned a **challenge** page |
+
+Why tier 3 exists (measured on icy-veins.com, a Cloudflare **managed**
+challenge, `cType: 'managed'`, new wording "Performing security verification"):
+
+- A managed challenge that does not trust the fingerprint shows a Turnstile
+  **checkbox** and waits for a human. Waiting alone never cleared it, from
+  any engine, CDP attached or not.
+- `--dump-dom` snapshots the first load event, and the challenge page is a
+  complete document, so tier 2 can only ever capture the interstitial. No
+  flag changes that (`--virtual-time-budget` and `--timeout` both tested).
+  Its dump even contains "Verification successful…". That text sits in a
+  `display:none` template div, **not** a pass.
+- Clicking the checkbox (a cross-origin iframe in a closed shadow root, so it
+  is clicked by coordinates: 30px in from the iframe's left edge) cleared it
+  **5/5 with CloakBrowser**, but **not with yousoro's engine**, whose
+  fingerprint still loses. Tier 1 clicks anyway because it is cheap, and a
+  Turnstile that survives its clicks skips tier 1's retry: the second attempt
+  would see the same widget.
+- Tier 3 must NOT inject yousoro's init script (CloakBrowser's C++ patches are
+  the fingerprint), and it drops `--enable-automation`, as the official
+  cloakbrowser wrapper does. Plain Playwright with `executablePath` is enough;
+  the wrapper package is not needed.
+
+Tier 3 renders from a live page, so it uses the same DOM-walk markdown as
+tier 1, and `extract` is re-run on it instead of being dropped. Cost: icy-veins
+end to end ~30s. A hard block (Google /sorry/, an image CAPTCHA) is not a
+challenge, so it never reaches tier 3. IP reputation is out of scope.
+
+If every tier is blocked, the result says so and says to stop retrying. That
+means the site really is unreachable; picking a different tool will not help.
 
 The spawn logic lives in `pa-extensions/_shared/cloak.ts`, shared with
 `pa-cloakbrowser`, so the container flags cannot drift between the two callers.

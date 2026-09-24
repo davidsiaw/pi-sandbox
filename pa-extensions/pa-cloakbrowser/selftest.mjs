@@ -163,7 +163,12 @@ const C = await import(join(here, "..", "_shared", "cache.ts"));
 // --- the wiring in index.ts itself ----------------------------------------
 {
 	check("index.ts defaults to markdown, not raw HTML", /params\.format \?\? "markdown"/.test(src), );
-	check("index.ts renders via the shared converters", /htmlToMarkdown\(raw, params\.url\)/.test(src));
+	check("index.ts renders via the shared converters", /htmlToMarkdown\(html, params\.url\)/.test(src));
+	check(
+		"index.ts retries live (wait + Turnstile click) when the dump is a challenge",
+		/if \(blocked && looksChallenge\(titleOf\(raw\), readable\)\)[\s\S]{0,400}?cloakFetchLive\(/.test(src),
+		"--dump-dom snapshots the first load, which for Cloudflare is always the interstitial",
+	);
 	check("index.ts caches every successful fetch", /writeCache\(tmpdir\(\)/.test(src));
 	check("index.ts always keeps the raw DOM too", /rawHtml: raw/.test(src));
 	check("index.ts previews with truncateHead", /truncateHead\(result, params\.max_chars/.test(src));

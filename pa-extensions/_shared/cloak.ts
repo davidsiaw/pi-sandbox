@@ -16,6 +16,13 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import {
+	type Chromium,
+	looksBlocked,
+	looksChallenge,
+	visibleText,
+	waitOutChallenge,
+} from "./stealth.ts";
 
 export const CLOAKBROWSER_BINARY = "/opt/cloakbrowser/cloakbrowser-bin";
 
@@ -93,4 +100,101 @@ export async function cloakDumpDom(opts: CloakFetchOptions): Promise<string> {
 export function titleOf(html: string): string {
 	const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
 	return m ? m[1].replace(/\s+/g, " ").trim() : "";
+}
+
+// ---------------------------------------------------------------------------
+// Live CloakBrowser: the escalation tier AFTER --dump-dom
+// ---------------------------------------------------------------------------
+//
+// WHY --dump-dom IS NOT ENOUGH
+// --dump-dom serialises the document at its first load event and exits. A
+// Cloudflare challenge page IS a complete document, so the dump is always the
+// challenge: nothing can wait for the post-verification reload, and nothing can
+// click the Turnstile checkbox a managed challenge asks for. Measured on
+// icy-veins.com: every --dump-dom variant (--virtual-time-budget, --timeout)
+// returned "Just a moment...".
+//
+// (Its dump also CONTAINS "Verification successful. Waiting for ... to
+// respond" -- a display:none template div in the challenge page, not a pass.
+// The regex renderer cannot see display:none, so do not read it as progress.)
+//
+// WHAT THIS DOES INSTEAD
+// Drives the same binary through Playwright (it is a real Chromium), then
+// reuses waitOutChallenge, which clicks Turnstile. On icy-veins that cleared
+// 5/5. Two things matter and were each tested:
+//   - NO yousoro init script. CloakBrowser's fingerprint is patched in C++; the
+//     JS overrides would paper over it with detectable getters.
+//   - ignoreDefaultArgs --enable-automation, as the official cloakbrowser
+//     wrapper does. The wrapper itself is NOT needed: plain Playwright with
+//     executablePath passed the same test.
+// Waiting without the click did NOT clear it, CDP attached or not.
+//
+// It costs a full browser session (~10-30s), so callers run it only when the
+// cheap --dump-dom came back as a CHALLENGE. A hard block (Google /sorry/, an
+// image CAPTCHA) cannot be waited or clicked out of and does not reach here.
+
+export interface CloakLiveOptions {
+	url: string;
+	fingerprint?: string;
+	challengeWaitMs?: number;
+	timeoutMs?: number;
+}
+
+export interface CloakLiveResult<T> {
+	status: number | null;
+	title: string;
+	finalUrl: string;
+	blocked: boolean;
+	/** Whatever `read` returned from the live page after the challenge. */
+	read: T;
+}
+
+/**
+ * Load `url` in a Playwright-driven CloakBrowser, wait out (and click) any
+ * challenge, then hand the live page to `read`. Rendering is the caller's, so
+ * yousoro can use its DOM walker and cloak_browse its string renderer.
+ */
+export async function cloakFetchLive<T>(
+	chromium: Chromium,
+	opts: CloakLiveOptions,
+	onProgress: (msg: string) => void,
+	// biome-ignore lint/suspicious/noExplicitAny: playwright page
+	read: (page: any) => Promise<T>,
+): Promise<CloakLiveResult<T>> {
+	const args = ["--no-sandbox", "--disable-dev-shm-usage"];
+	if (opts.fingerprint) args.push(`--fingerprint=${opts.fingerprint}`);
+	const browser = await chromium.launch({
+		executablePath: CLOAKBROWSER_BINARY,
+		headless: true,
+		args,
+		ignoreDefaultArgs: ["--enable-automation"],
+	});
+	try {
+		const page = await browser.newPage();
+		const resp = await page.goto(opts.url, {
+			waitUntil: "domcontentloaded",
+			timeout: opts.timeoutMs ?? 30000,
+		});
+		let status: number | null = resp ? resp.status() : null;
+		let title: string = await page.title();
+		let vtext = await visibleText(page);
+		if (looksChallenge(title, vtext)) {
+			vtext = await waitOutChallenge(page, opts.challengeWaitMs ?? 25000, onProgress);
+			title = await page.title();
+			// Same rule as yousoro: a challenge that cleared makes its 403 moot.
+			if (!looksChallenge(title, vtext)) {
+				status = 200;
+				// The reload after verification is a fresh navigation; let it settle
+				// before reading, or `read` races a half-built DOM.
+				await page.waitForLoadState("domcontentloaded").catch(() => {});
+				await page.waitForTimeout(1500);
+				title = await page.title();
+				vtext = await visibleText(page);
+			}
+		}
+		const blocked = looksChallenge(title, vtext) || looksBlocked(status, vtext);
+		return { status, title, finalUrl: page.url(), blocked, read: await read(page) };
+	} finally {
+		await browser.close();
+	}
 }

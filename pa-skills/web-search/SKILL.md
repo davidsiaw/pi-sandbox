@@ -117,6 +117,7 @@ auto_load: true
 故：
 
 - **不必汝手召 `cloak_browse`**——`yousoro_browse` 已自為之。
+- 升有三級：`yousoro` → `cloakbrowser`（`--dump-dom`）→ `cloakbrowser-live`（活驅之，候 Cloudflare 之驗，自點 Turnstile 之框）。見 `Engine: cloakbrowser-live` 者，乃第三級所得，其文可信，`extract` 亦已重取於其頁。
 - 若其報 `Blocked: true` **於自升之後**，乃二引擎皆敗，是真不得過也：
   **另尋一源，勿捶之，亦勿重試同一具**。
 - 唯設 `escalate=false` 者不自升；其時報中明言「Next step: cloak_browse url=...」，

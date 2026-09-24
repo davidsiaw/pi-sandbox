@@ -20,10 +20,10 @@
  * collapsed into one unusable line), and the raw markup is cached next to it for
  * when the rendering is not enough.
  *
- * The right fix is to drive CloakBrowser over CDP (it is a Chromium; launch with
- * --remote-debugging-port and connect with the playwright-core already installed
- * in the image) and then reuse the DOM walker. That is a real change to the
- * fetch path, so it is deliberately not bundled with this one.
+ * CloakBrowser CAN now be driven live (`cloakFetchLive` in ./cloak.ts), but
+ * only as a fallback when the DOM dump is a challenge page: it costs a full
+ * browser session. yousoro's tier-3 escalation uses the DOM walker on that live
+ * page; the plain --dump-dom path still lands here.
  */
 
 const SKIP_BLOCKS = /<(script|style|noscript|template|svg|head)\b[^>]*>[\s\S]*?<\/\1>/gi;

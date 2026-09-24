@@ -497,6 +497,9 @@ export function looksHopeless(visibleText: string): boolean {
 // disappear the moment the real page renders, so they are the reliable signal.
 export const CHALLENGE_MARKERS = [
 	"just a moment",
+	// Cloudflare's 2025+ managed-challenge wording (icy-veins.com). The title
+	// still says "Just a moment...", but do not depend on that alone.
+	"performing security verification",
 	"checking your browser",
 	"checking if the site connection is secure",
 	"enable javascript and cookies to continue",
@@ -532,9 +535,42 @@ export async function visibleText(
 	}
 }
 
+// Click a Cloudflare Turnstile checkbox if one is on the page. Returns true if
+// it clicked.
+//
+// A MANAGED challenge (`cType: 'managed'`) that does not trust the fingerprint
+// outright renders an interactive checkbox and waits for a human. Waiting alone
+// never clears it -- measured on icy-veins.com: 20s of waiting, still blocked,
+// from both engines. One click on the checkbox cleared it (cf_clearance set,
+// real page loaded) 5/5 times with the CloakBrowser engine. yousoro's own
+// engine still fails after the click (its fingerprint loses the check), but the
+// click costs nothing there.
+//
+// The widget is a cross-origin iframe inside a CLOSED shadow root, so no
+// selector reaches the checkbox. The iframe element itself is reachable from
+// the Frame, and the checkbox sits ~30px from its left edge, vertically
+// centred. page.mouse.click dispatches a real input event at those coordinates.
+export async function clickTurnstile(
+	// biome-ignore lint/suspicious/noExplicitAny: playwright page
+	page: any,
+): Promise<boolean> {
+	for (const frame of page.frames()) {
+		if (!frame.url().includes("challenges.cloudflare.com")) continue;
+		try {
+			const box = await (await frame.frameElement()).boundingBox();
+			if (!box || box.width < 30 || box.height < 30) continue;
+			await page.mouse.click(box.x + 30, box.y + box.height / 2);
+			return true;
+		} catch {
+			// Frame detached mid-check (the challenge moved on); nothing to click.
+		}
+	}
+	return false;
+}
+
 // Wait for a Cloudflare-style interstitial to clear. The challenge page runs JS
 // then navigates to the real content; poll until the visible challenge text is
-// gone (or timeout). Returns the final visible text once cleared, or the last
+// gone (or timeout). Clicks a Turnstile checkbox when one appears. Returns the final visible text once cleared, or the last
 // seen. Detection is on title + innerText so leftover CF scripts in the DOM of
 // the *cleared* page don't keep it looping (see note on CHALLENGE_MARKERS).
 export async function waitOutChallenge(
@@ -547,31 +583,40 @@ export async function waitOutChallenge(
 	let text = await visibleText(page);
 	let title = await page.title();
 	let waited = 0;
+	// Two clicks at most: one when the widget first appears, one more in case it
+	// re-rendered (Turnstile refreshes a stale widget). Clicking forever would
+	// only toggle a checkbox that is already being processed.
+	let clicks = 0;
+	let lastClickAt = 0;
 	while (looksChallenge(title, text) && Date.now() < deadline) {
 		onProgress(`Cloudflare challenge detected; waiting for it to clear (${waited}ms)...`);
+		if (clicks < 2 && Date.now() - lastClickAt > 8000 && (await clickTurnstile(page))) {
+			clicks++;
+			lastClickAt = Date.now();
+			onProgress("Clicked the Turnstile checkbox.");
+		}
 		try {
 			// Wait until the visible interstitial text/title disappears (redirect to
 			// real content). Checks title + document.body.innerText, NOT innerHTML,
 			// so leftover challenge <script> tags don't defeat the wait.
+			// The markers are passed in rather than restated: an inline copy here
+			// had already drifted two entries behind CHALLENGE_MARKERS.
+			// Short rounds, so a Turnstile widget that renders mid-wait gets clicked
+			// within ~2s instead of up to 5s later.
 			await page.waitForFunction(
-				() => {
+				(markers: string[]) => {
 					const t = (document.title || "").toLowerCase();
 					const v = (document.body?.innerText || "").toLowerCase();
-					const markers = [
-						"just a moment",
-						"checking your browser",
-						"checking if the site connection is secure",
-						"enable javascript and cookies to continue",
-						"verifying you are human",
-					];
 					return !markers.some((m) => t.includes(m) || v.includes(m));
 				},
-				{ timeout: 5000 },
+				CHALLENGE_MARKERS,
+				{ timeout: 2000 },
 			);
 		} catch {
-			// waitForFunction timed out this round; loop and re-check until deadline.
+			// waitForFunction timed out this round (or the page navigated mid-poll
+			// after a successful check); loop and re-check until deadline.
 		}
-		waited += 5000;
+		waited += 2000;
 		text = await visibleText(page);
 		title = await page.title();
 	}

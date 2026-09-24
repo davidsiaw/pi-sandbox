@@ -138,6 +138,16 @@ survive in the DOM of a page that cleared) and marks the result as an error,
 noting that CloakBrowser is the last resort in this image so there is nothing
 further to escalate to.
 
+### A challenge in the dump triggers a live retry
+
+`--dump-dom` snapshots the first load event, and for Cloudflare that is always
+the interstitial. So when the dump looks like a **challenge** (not a hard
+block), `cloak_browse` launches the same binary through Playwright, waits the
+challenge out, clicks the Turnstile checkbox, and returns that page. The header
+then says `Mode: live (...)`. That retry is what gets icy-veins.com through.
+See `cloakFetchLive` in `_shared/cloak.ts` and
+[yousoro-browsing.md](yousoro-browsing.md#tier-3-live-cloakbrowser-for-challenges-the-dom-dump-cannot-pass).
+
 ## When to Use CloakBrowser
 
 Use `cloak_browse` when:
@@ -286,7 +296,7 @@ The free binary (v146) may not pass the latest reCAPTCHA v3. Consider:
 - `pa-extensions/pa-cloakbrowser/selftest.mjs` - Guards the bounded preview, the two cache files, and the markdown/text rendering (run by `smoketest.sh`)
 - `pa-extensions/_shared/cache.ts` - Shared output-caching module, incl. the footer both tools print (moved here from `pa-yousoro-browse/`)
 - `pa-extensions/_shared/html-to-markdown.ts` - Regex HTML→Markdown/text used when there is no live DOM
-- `pa-extensions/_shared/cloak.ts` - Shared binary spawn + `--dump-dom` fetch, used by `cloak_browse` and by `yousoro_browse`'s automatic escalation
+- `pa-extensions/_shared/cloak.ts` - Shared binary spawn, `--dump-dom` fetch and the live (Playwright-driven, Turnstile-clicking) fetch, used by `cloak_browse` and by `yousoro_browse`'s automatic escalation
 - `build.sh` - Added `CLOAKBROWSER_VERSION` build argument
 - `pa-skills/web-search/SKILL.md` - Updated with CloakBrowser documentation
 

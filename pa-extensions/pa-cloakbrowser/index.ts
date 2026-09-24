@@ -46,9 +46,9 @@ import {
   truncateHead,
   writeCache,
 } from "../_shared/cache.ts";
-import { CLOAKBROWSER_BINARY, cloakAvailable, runCloak, titleOf } from "../_shared/cloak.ts";
+import { cloakFetchLive, CLOAKBROWSER_BINARY, cloakAvailable, runCloak, titleOf } from "../_shared/cloak.ts";
 import { htmlToMarkdown, htmlToText } from "../_shared/html-to-markdown.ts";
-import { looksBlocked, looksChallenge } from "../_shared/stealth.ts";
+import { loadChromium, looksBlocked, looksChallenge } from "../_shared/stealth.ts";
 
 const DEFAULT_MAX_CHARS = 8000;
 
@@ -112,7 +112,7 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
       "Prefer yousoro_browse for web pages: it escalates to cloak_browse by itself when a page is blocked. Call cloak_browse directly only for a site known to need reCAPTCHA v3 / Turnstile / behavioral evasion, or when a fetch made some other way came back blocked.",
     ],
     parameters: BrowseParams,
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId, params, _signal, onUpdate) {
       const timeout = params.timeout_ms ?? 30000;
 
       // Build args: Known working flags for Docker/containers
@@ -152,13 +152,14 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
       }
 
       const format = params.format ?? "markdown";
-      const raw = stdout.trim();
-      const result =
+      let raw = stdout.trim();
+      const render = (html: string) =>
         format === "markdown"
-          ? htmlToMarkdown(raw, params.url)
+          ? htmlToMarkdown(html, params.url)
           : format === "text"
-            ? htmlToText(raw)
-            : raw;
+            ? htmlToText(html)
+            : html;
+      let result = render(raw);
 
       // `--dump-dom` exits 0 whatever it was served, so a Cloudflare interstitial
       // or a DNS error page used to be returned as if it were the article. Detect
@@ -166,8 +167,39 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
       // survive in the DOM of a page that cleared, which is why yousoro_browse
       // matches visible text only).
       const readable = format === "html" ? htmlToText(raw) : result;
-      const blocked =
+      let blocked =
         looksChallenge(titleOf(raw), readable) || looksBlocked(null, readable);
+
+      // A CHALLENGE in the dump is expected, not final: --dump-dom snapshots the
+      // first load, which for Cloudflare is always the interstitial. Drive the
+      // same binary live -- wait it out, click Turnstile -- and use that page.
+      // See cloakFetchLive in ../_shared/cloak.ts for what was measured.
+      let live = false;
+      let liveNote = "";
+      if (blocked && looksChallenge(titleOf(raw), readable)) {
+        onUpdate?.({
+          content: [{ type: "text", text: "Challenge page in the DOM dump; retrying live (wait + Turnstile click)..." }],
+        });
+        try {
+          const res = await cloakFetchLive(
+            loadChromium(),
+            { url: params.url, fingerprint: params.fingerprint, timeoutMs: timeout },
+            (msg) => onUpdate?.({ content: [{ type: "text", text: msg }] }),
+            (page) => page.content() as Promise<string>,
+          );
+          if (!res.blocked) {
+            raw = res.read;
+            result = render(raw);
+            blocked = false;
+            live = true;
+          } else {
+            liveNote = "A live retry (waiting out the challenge, clicking Turnstile) was also blocked. ";
+          }
+        } catch (err) {
+          // The dump's (blocked) result stands; say why the live retry did not help.
+          liveNote = `A live retry failed: ${err instanceof Error ? err.message : String(err)}. `;
+        }
+      }
 
       if (!result) {
         return {
@@ -199,7 +231,9 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
       const heading =
         format === "markdown" ? "Page markdown" : format === "text" ? "Page text" : "Page HTML";
       const parts: string[] = [
-        `URL: ${params.url}\nFormat: ${format}  Humanize: ${params.humanize ?? true}`,
+        `URL: ${params.url}\nFormat: ${format}  Humanize: ${params.humanize ?? true}  Mode: ${
+          live ? "live (DOM dump hit a challenge; cleared by waiting + Turnstile click)" : "dump-dom"
+        }`,
       ];
       parts.push(
         preview.truncated
@@ -219,7 +253,9 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
         // leaving the caller to hunt for another tool that does not exist.
         parts.push(
           "\n--- BLOCKED ---\n" +
-            "The page looks like a challenge/CAPTCHA rather than content. CloakBrowser " +
+            "The page looks like a challenge/CAPTCHA rather than content. " +
+            liveNote +
+            "CloakBrowser " +
             "is the strongest fetcher in this sandbox, so there is nothing further to " +
             "escalate to: try a different source for the same information, or tell the " +
             "user the site cannot be read from here.",
@@ -238,6 +274,7 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
           truncated: preview.truncated,
           totalChars: preview.totalChars,
           blocked,
+          live,
         },
         isError: blocked,
       };

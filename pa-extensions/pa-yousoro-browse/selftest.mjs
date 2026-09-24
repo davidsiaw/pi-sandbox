@@ -404,6 +404,76 @@ check(
 	!H.looksHopeless("Too many requests. Please try again later."),
 	"transient 429s would stop being retried",
 );
+
+// --- (5) Turnstile: managed challenges need a click -------------------------
+// Cloudflare's managed challenge (icy-veins.com) renders a Turnstile checkbox
+// and waits for a human; waiting alone never cleared it, from either engine.
+// These drive the real waitOutChallenge against a routed fake: a "Just a
+// moment..." page embedding a cross-origin iframe on challenges.cloudflare.com
+// that "passes" when its checkbox (30px from the left edge) is clicked. No
+// network: page.route fulfils both documents.
+check(
+	"looksChallenge true on Cloudflare's new managed-challenge wording",
+	H.looksChallenge("www.icy-veins.com", "Performing security verification\nThis website uses a security service"),
+);
+const S = await import(join(here, "..", "_shared", "stealth.ts"));
+const stealthSrc = readFileSync(join(here, "..", "_shared", "stealth.ts"), "utf8");
+check(
+	"waitOutChallenge polls with CHALLENGE_MARKERS, not a drifting inline copy",
+	/CHALLENGE_MARKERS,\s*\{ timeout: 2000 \}/.test(stealthSrc),
+);
+{
+	const tctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+	const tpage = await tctx.newPage();
+	await tpage.route("https://challenges.cloudflare.com/**", (r) =>
+		r.fulfill({
+			contentType: "text/html",
+			body:
+				'<body style="margin:0"><input type="checkbox" style="position:absolute;left:18px;top:20px;width:24px;height:24px;margin:0" ' +
+				'onclick="parent.postMessage(\'passed\', \'*\')"></body>',
+		}),
+	);
+	await tpage.route("https://site.test/**", (r) =>
+		r.fulfill({
+			contentType: "text/html",
+			body:
+				"<title>Just a moment...</title><body><h2>Performing security verification</h2>" +
+				'<iframe src="https://challenges.cloudflare.com/turnstile/fake" style="width:300px;height:65px;border:0"></iframe>' +
+				"<script>addEventListener('message', () => { document.title = 'Real page'; document.body.innerHTML = '<p>REAL CONTENT</p>'; });</script></body>",
+		}),
+	);
+	await tpage.goto("https://site.test/", { waitUntil: "load" });
+	const logs = [];
+	const after = await S.waitOutChallenge(tpage, 10000, (m) => logs.push(m));
+	check("waitOutChallenge clicks Turnstile and clears the challenge", after.includes("REAL CONTENT"), after);
+	check("the click is reported in progress", logs.includes("Clicked the Turnstile checkbox."), JSON.stringify(logs));
+
+	await tpage.goto("https://site.test/plain", { waitUntil: "load" });
+	await tpage.evaluate(() => { document.body.innerHTML = "<p>no widget</p>"; });
+	check("clickTurnstile does nothing on a page with no widget", (await S.clickTurnstile(tpage)) === false);
+	await tctx.close();
+}
+
+// Tier 3: live CloakBrowser, only after the DOM dump came back as a CHALLENGE.
+check(
+	"tier 3 (cloakFetchLive) runs only after the DOM dump, and only on a challenge",
+	idx.indexOf("cloakFetchLive(") > idx.indexOf("cloakDumpDom({") &&
+		/if \(stillBlocked && dumpChallenge\)[\s\S]{0,600}?cloakFetchLive\(/.test(idx),
+);
+check("tier 3 reports its own engine", /result\.engine = "cloakbrowser-live"/.test(idx));
+check("tier 3 re-runs extract on the live page", /extractFrom\(page, params\.extract/.test(idx));
+check(
+	"a Turnstile that survives its clicks skips the same-engine retry",
+	/looksHopeless\(vtext\) \|\| turnstileHeld/.test(idx),
+	"tier 1 will burn 20s + backoff + 20s on a verdict it cannot change",
+);
+const cloakSrc = readFileSync(join(here, "..", "_shared", "cloak.ts"), "utf8");
+const liveFn = cloakSrc.slice(cloakSrc.indexOf("export async function cloakFetchLive"));
+check("live CloakBrowser drops --enable-automation", /ignoreDefaultArgs: \["--enable-automation"\]/.test(liveFn));
+check(
+	"live CloakBrowser injects NO JS init script (its C++ patches are the fingerprint)",
+	!/addInitScript/.test(liveFn),
+);
 } finally {
 	await browser.close();
 }
