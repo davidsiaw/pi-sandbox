@@ -651,7 +651,13 @@ const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })
 walk(dir);
 if (!src) { process.stdout.write("NO_FN"); process.exit(0); }
 // The body references the bundles fs alias, APP_NAME and quoteIfNeeded; supply them.
-const make = new Function("fs8", "APP_NAME", "quoteIfNeeded", src + "; return formatResumeCommand;");
+// esbuild renumbers these per release (fs8 in 0.87, fs5 in 1.0), so read the
+// names off the extracted source instead of hardcoding them.
+const ident = (re, dflt) => (src.match(re) || [, dflt])[1];
+const fsName = ident(/\b(fs\d*)\.existsSync\(/, "fs");
+const appName = ident(/\b(APP_NAME\d*)\b/, "APP_NAME");
+const quoteName = ident(/\b(quoteIfNeeded\d*)\(/, "quoteIfNeeded");
+const make = new Function(fsName, appName, quoteName, src + "; return formatResumeCommand;");
 const fn = make({ existsSync: () => true }, "pi", (s) => s);
 const sm = {
   isPersisted: () => true,
