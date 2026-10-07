@@ -35,10 +35,14 @@ echo "==> Testing image $IMAGE_TAG"
 docker volume rm "$VOLUME" >/dev/null 2>&1 || true
 docker volume create "$VOLUME" >/dev/null
 
+# Every run*() helper returns 0 whatever the container exited with. Checks judge
+# the OUTPUT (grep for a marker), never the exit status -- and under `set -e`, a
+# non-zero status inside `out="$(run ...)"` kills the whole script on the spot
+# with no FAIL line, so a failing selftest looked like the suite just stopping.
 run() {
   docker run --rm --user "${UID_TEST}:${UID_TEST}" \
     -v "${VOLUME}:${MISE_MOUNT}" \
-    "$IMAGE_TAG" bash -lc "$1" 2>&1
+    "$IMAGE_TAG" bash -lc "$1" 2>&1 || true
 }
 
 # Like run(), but DISCARDS stderr. The entrypoint writes its diagnostics there
@@ -48,7 +52,7 @@ run() {
 run_clean() {
   docker run --rm --user "${UID_TEST}:${UID_TEST}" \
     -v "${VOLUME}:${MISE_MOUNT}" \
-    "$IMAGE_TAG" bash -lc "$1" 2>/dev/null
+    "$IMAGE_TAG" bash -lc "$1" 2>/dev/null || true
 }
 
 # Like run(), but with the security flag `pa` applies BY DEFAULT. The image
@@ -60,7 +64,7 @@ run_nnp() {
   docker run --rm --user "${UID_TEST}:${UID_TEST}" \
     --security-opt no-new-privileges \
     -v "${VOLUME}:${MISE_MOUNT}" \
-    "$IMAGE_TAG" bash -lc "$1" 2>&1
+    "$IMAGE_TAG" bash -lc "$1" 2>&1 || true
 }
 
 # First line of a version command's stdout that looks like a version.
@@ -799,7 +803,7 @@ run_pkg() {
   docker run --rm --user "${UID_TEST}:${UID_TEST}" \
     -v "${VOLUME}:${MISE_MOUNT}" \
     -v "$pkgdir:/opt/pa/local-packages/pa-smoke-private-0:ro" \
-    "$IMAGE_TAG" bash -lc "$1" 2>&1
+    "$IMAGE_TAG" bash -lc "$1" 2>&1 || true
 }
 
 if run_pkg 'test -f /opt/pa/local-packages/pa-smoke-private-0/package.json && echo PKG_MOUNTED' \
@@ -1080,7 +1084,11 @@ fi
 # We use http://example.com which is lightweight and always available.
 # grep -c returns 0 when count>0 (match found) or 1 (no match), avoiding
 # SIGPIPE from grep exiting before the upstream finishes streaming.
-out="$(run 'timeout 45 /opt/cloakbrowser/cloakbrowser-bin --headless --no-sandbox --dump-dom http://example.com 2>&1 | grep -ci "<h1>Example Domain</h1>" && echo PAGE_FETCH_OK' 2>&1)"
+# Match the <title>, not the <h1>: example.com's redesign dropped the
+# <h1> entirely, and the title is the most stable thing on the page.
+# `|| echo PAGE_FETCH_MISS` keeps run() at exit 0 on a miss: otherwise the
+# assignment fails under `set -e` and the script dies here without printing FAIL.
+out="$(run 'timeout 45 /opt/cloakbrowser/cloakbrowser-bin --headless --no-sandbox --dump-dom http://example.com 2>&1 | grep -ci "<title>Example Domain</title>" && echo PAGE_FETCH_OK || echo PAGE_FETCH_MISS' 2>&1)"
 if echo "$out" | grep -q 'PAGE_FETCH_OK'; then
   pass "CloakBrowser successfully fetched and rendered a page"
 else
