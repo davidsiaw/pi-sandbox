@@ -26,8 +26,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Runner OS pinned, not `ubuntu-latest`: that label moves to Ubuntu 26.04
+  # between 2026-10-19 and 2026-11-19 (actions/runner-images#14748), which would
+  # swap the docker/buildx/QEMU host under the nightly build with no commit to
+  # blame. The image itself is FROM a digest-pinned debian, so only the host side
+  # changes. To move to 26.04: change both labels, then run workflow_dispatch with
+  # force=true and check the smoke test before relying on the nightly.
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       should_build: ${{ steps.decide.outputs.should_build }}
       pi_version: ${{ steps.decide.outputs.pi_version }}
@@ -82,7 +88,7 @@ jobs:
   build:
     needs: check
     if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PI_VERSION: ${{ needs.check.outputs.pi_version }}
     steps:
