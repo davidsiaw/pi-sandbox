@@ -215,17 +215,12 @@ Skipping `poppler-data` is safe for this use: it supplies CJK *font/encoding*
 tables, and a scanned page is a raster image with no fonts to resolve. A
 text-bearing CJK PDF is read through `pdf_read`, which never touches poppler.
 
-## Dependency: pdf-parse is borrowed, not duplicated
+## Dependency: pdf-parse
 
-`pdf-parse` (30 MB — it ships four copies of pdf.js) is already baked in as a
-transitive dependency of `pi-local-rag` under `pa-rag`. Per the `pa-uitag`
-precedent (*"onnxruntime-node is still borrowed on purpose (31 MB)"*), something
-this size is borrowed. `pa-pdf` therefore declares **no dependencies**.
-
-The cost is coupling: a `pa-rag` dependency change breaks `pa-pdf` at a
-distance. So resolution walks `node_modules` explicitly, **fails loudly** with an
-actionable message naming every path it searched, and the selftest asserts it
-still resolves.
+`pdf-parse` is a declared dependency of `pa-pdf`, pinned to `1.1.4`. Its bundled
+test corpus is deleted at build time by `scripts/install-extension-deps.sh`.
+Resolution walks `node_modules` explicitly, **fails loudly** with an actionable
+message naming every path it searched, and the selftest asserts it resolves.
 
 Two loading constraints are documented **in `pdf.ts` itself**, on the lines they
 protect, rather than here: which entry point to require, and why `createRequire`

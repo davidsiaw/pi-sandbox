@@ -11,8 +11,9 @@
  *
  * Instead we take the part that matters — uitag's bundled 18 MB YOLO model,
  * trained on GroundCUA (55K desktop screenshots, 3.56M annotations) — exported
- * once to ONNX at build time, and run it with `onnxruntime-node`, which is
- * ALREADY in the image for pa-rag. Net cost: the 36 MB model file. No Python,
+ * once to ONNX at build time, and run it with `onnxruntime-node` (pinned in
+ * this extension's package.json). Net cost: the 36 MB model plus ~31 MB of
+ * Linux-CPU-only runtime once install-extension-deps.sh prunes it. No Python,
  * no torch, no GPU, and ONNX + WASM are arch-neutral so multi-arch is free.
  *
  * FIDELITY (measured against ultralytics on the same screenshot, conf .25,
@@ -35,18 +36,13 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
-// onnxruntime-node is deliberately BORROWED from pa-rag rather than declared
-// here: it is 31 MB after install-rag-model.sh prunes it to Linux-CPU-only, and
-// a second copy would buy nothing. This is a conscious, documented exception.
+// onnxruntime-node and photon-node are both declared dependencies of this
+// extension and resolve by name from its own node_modules.
 //
-// photon-node is NOT borrowed. It used to be, but pa-rag does not declare it
-// either — it arrives transitively via pi-local-rag, so a patch bump upstream
-// could drop it and silently break detect_ui_elements. At 2.2 MB it is far
-// cheaper to own than to gamble on, so it is a real dependency in this
-// extension's package.json and resolves by name from our own node_modules.
-const PA_RAG_MODULES = "/opt/pa/extensions/pa-rag/node_modules";
-// Repo-relative fallback so the selftest can run from a checkout.
-const LOCAL_RAG_MODULES = new URL("../pa-rag/node_modules", import.meta.url).pathname;
+// onnxruntime-node is pinned to 1.14.0 on purpose: it is the version this
+// model was verified against, and it ships its native binaries inside the
+// tarball. Newer releases fetch a ~300 MB CUDA provider in a postinstall
+// script. install-extension-deps.sh prunes the non-Linux / GPU binaries.
 
 /** Class names, in model output order. From uitag's YOLO_CATEGORY_NAMES. */
 export const UITAG_CLASSES = [
@@ -89,51 +85,34 @@ interface Deps {
 // biome-ignore lint/suspicious/noExplicitAny: createRequire's return type
 type Req = any;
 
-/** onnxruntime-node, borrowed from pa-rag. See the note at PA_RAG_MODULES. */
+/** onnxruntime-node, a declared dependency of this extension. */
 function loadOrt(require: Req): Any {
-	let lastErr: unknown;
-	for (const root of [PA_RAG_MODULES, LOCAL_RAG_MODULES]) {
-		try {
-			const ort = require(`${root}/onnxruntime-node/dist/index.js`);
-			if (ort?.InferenceSession) return ort.default ?? ort;
-		} catch (err) {
-			lastErr = err;
-		}
+	try {
+		const ort = require("onnxruntime-node");
+		if (ort?.InferenceSession) return ort.default ?? ort;
+		throw new Error("module loaded but has no InferenceSession export");
+	} catch (err) {
+		throw new Error(
+			"Could not load onnxruntime-node. It is a declared dependency of " +
+				"pa-uitag; run `npm install` in this extension directory. " +
+				`Last error: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
-	throw new Error(
-		"Could not load onnxruntime-node from pa-rag's node_modules " +
-			`(tried ${PA_RAG_MODULES} and ${LOCAL_RAG_MODULES}). ` +
-			`Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
-	);
 }
 
 /** photon-node, a declared dependency of this extension. */
 function loadPhoton(require: Req): Any {
-	let lastErr: unknown;
-	// Declared in package.json, so ordinary name resolution finds it in this
-	// extension's own node_modules.
 	try {
 		const photon = require("@silvia-odwyer/photon-node/photon_rs.js");
 		if (photon?.PhotonImage) return photon.default ?? photon;
+		throw new Error("module loaded but has no PhotonImage export");
 	} catch (err) {
-		lastErr = err;
+		throw new Error(
+			"Could not load @silvia-odwyer/photon-node. It is a declared dependency of " +
+				"pa-uitag; run `npm install` in this extension directory. " +
+				`Last error: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
-	// Fallback to pa-rag's transitive copy. Retained so a checkout that has not
-	// run `npm install` here still works; no longer the primary path, so an
-	// upstream pi-local-rag change cannot silently break this tool.
-	for (const root of [PA_RAG_MODULES, LOCAL_RAG_MODULES]) {
-		try {
-			const photon = require(`${root}/@silvia-odwyer/photon-node/photon_rs.js`);
-			if (photon?.PhotonImage) return photon.default ?? photon;
-		} catch (err) {
-			lastErr = err;
-		}
-	}
-	throw new Error(
-		"Could not load @silvia-odwyer/photon-node. It is a declared dependency of " +
-			"pa-uitag; run `npm install` in this extension directory. " +
-			`Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
-	);
 }
 
 function loadDeps(): Deps {

@@ -107,16 +107,15 @@ RUN git clone --depth 1 https://github.com/AmazingAng/auth2api /opt/auth2api && 
 # Chromium, mise, CloakBrowser, auth2api). Everything BELOW is this repo's own
 # source, which changes constantly. Keep that order: these COPYs used to sit
 # near the top, so editing one line of one extension invalidated the auth2api
-# clone+build, the global npm installs, and the 23MB model bake underneath it.
+# clone+build, the global npm installs, and the model bake underneath it.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Extension DEPENDENCIES, installed from manifests alone.
 #
 # Only package.json (and lockfile, where present) is copied here, deliberately.
-# Everything from this point down to the source COPY is expensive -- six npm
-# installs (pa-rag's tree alone is 329MB), a 23MB model download, an ONNX
-# Runtime prune, two upstream patches and a second model bake -- and none of it
-# reads extension SOURCE. Copying the whole tree first meant editing one comment
+# Everything from this point down to the source COPY is expensive -- the npm
+# installs (with their ONNX Runtime prune) and the uitag model bake -- and none
+# of it reads extension SOURCE. Copying the whole tree first meant editing one comment
 # in one extension re-ran all of it, plus the pi install below.
 #
 # Manifests are listed one by one rather than globbed: `COPY a/*/package.json`
@@ -132,9 +131,9 @@ COPY pa-extensions/pa-checker/package.json         /opt/pa/extensions/pa-checker
 COPY pa-extensions/pa-cloakbrowser/package.json    /opt/pa/extensions/pa-cloakbrowser/
 COPY pa-extensions/pa-console/package.json         /opt/pa/extensions/pa-console/
 COPY pa-extensions/pa-inspect-image/package.json   /opt/pa/extensions/pa-inspect-image/
+COPY pa-extensions/pa-pdf/package.json             /opt/pa/extensions/pa-pdf/
 COPY pa-extensions/pa-screenshot/package.json      /opt/pa/extensions/pa-screenshot/
 COPY pa-extensions/pa-uitag/package.json           /opt/pa/extensions/pa-uitag/
-COPY pa-extensions/pa-rag/package.json             pa-extensions/pa-rag/package-lock.json             /opt/pa/extensions/pa-rag/
 COPY pa-extensions/pa-yousoro-browse/package.json  pa-extensions/pa-yousoro-browse/package-lock.json  /opt/pa/extensions/pa-yousoro-browse/
 
 # pa-cloakbrowser used to get its own `npm install` here. That was redundant:
@@ -143,26 +142,8 @@ COPY pa-extensions/pa-yousoro-browse/package.json  pa-extensions/pa-yousoro-brow
 COPY scripts/install-extension-deps.sh /tmp/install-extension-deps.sh
 RUN bash /tmp/install-extension-deps.sh
 
-# Bake the pa-rag embedding model and strip ONNX Runtime's CUDA / foreign-platform
-# binaries. Must run in the same layer as the prune to actually shrink the image.
-COPY scripts/install-rag-model.sh /tmp/install-rag-model.sh
-RUN bash /tmp/install-rag-model.sh && rm /tmp/install-rag-model.sh
-
-# Cap pi-local-rag's embedding batch size. Upstream's hardcoded BATCH_SIZE=64
-# peaks at ~2.2GB RSS for one batch of real source chunks, which OOM-kills the
-# container (exit 137) inside Docker Desktop's ~3.8GB VM. See the script header
-# for the measured numbers. PA_RAG_BATCH_SIZE overrides the default at runtime.
-COPY scripts/patch-rag-batch.sh /tmp/patch-rag-batch.sh
-RUN bash /tmp/patch-rag-batch.sh && rm /tmp/patch-rag-batch.sh
-
-# Route .jsonl extraction through pa-rag, so an opted-in session transcript is
-# indexed as message prose rather than raw JSON lines. Inert unless pa-rag
-# installs the hook. See the script header for the retrieval-quality measurement.
-COPY scripts/patch-rag-jsonl.sh /tmp/patch-rag-jsonl.sh
-RUN bash /tmp/patch-rag-jsonl.sh && rm /tmp/patch-rag-jsonl.sh
-
-# Bake the pa-uitag UI-element detection model (ONNX). Runs after pa-rag because
-# it reuses that extension's onnxruntime-node to verify the model loads. Takes
+# Bake the pa-uitag UI-element detection model (ONNX). Runs after the deps
+# install because it uses pa-uitag's onnxruntime-node to verify the model loads. Takes
 # the artifact from the uitag-export stage by default; PA_UITAG_MODEL_URL
 # overrides it with a self-hosted copy.
 ARG PA_UITAG_MODEL_URL=

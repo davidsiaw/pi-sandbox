@@ -59,7 +59,7 @@
     - `pa-apt` 何理、何所不能──`scripts.md`
     - 紅寶／結／蟒之版、mise 之窖──`runtimes.md`
     - 何物存、何物亡、所掛之徑──`usage.md`、`architecture.md`
-    - 候網、截圖、視圖、PDF、RAG 之具──`yousoro-browsing.md`、`screenshot.md`、`uitag.md`、`pdf.md`、`rag.md`
+    - 候網、截圖、視圖、PDF 之具──`yousoro-browsing.md`、`screenshot.md`、`uitag.md`、`pdf.md`
     - 遇障──`troubleshooting.md`
 - **二本之別，一言以決之**：若汝所在之工即 pi-sandbox 之源（其下有 `Dockerfile` 及
   `pa-extensions/`），則**唯讀工中之 `docs/`**──汝所改者即此；`/opt/pa/docs` 乃昔像之印，

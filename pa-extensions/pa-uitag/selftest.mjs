@@ -149,20 +149,11 @@ try {
 	// --- (4) A reported box really crops to the reported size ---------------
 	// This is the contract that matters: the numbers must be directly usable.
 	if (r.detections.length > 0) {
-		const roots = [
-			"/opt/pa/extensions/pa-rag/node_modules",
-			join(here, "..", "pa-rag", "node_modules"),
-		];
 		let photon;
-		for (const root of roots) {
-			try {
-				const m = require_(`${root}/@silvia-odwyer/photon-node/photon_rs.js`);
-				if (m?.PhotonImage) {
-					photon = m.default ?? m;
-					break;
-				}
-			} catch {}
-		}
+		try {
+			const m = require_("@silvia-odwyer/photon-node/photon_rs.js");
+			if (m?.PhotonImage) photon = m.default ?? m;
+		} catch {}
 		if (!photon) {
 			check("photon available for the crop check", false);
 		} else {

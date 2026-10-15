@@ -10,9 +10,6 @@ This sandbox runs the **pi coding agent** — an AI pair programmer that actuall
 
 ## What the agent can do for you
 
-### 🔍 Search your codebase by meaning, not just keywords
-Ask the agent to "find how retry logic is handled" and it uses **hybrid RAG search** (keyword + semantic vector) to surface the right code chunks across source, docs, and CI config — no `grep`-and-pray. **Live RAG** indexes changed files in real time, so the agent always has fresh context.
-
 ### 📄 Read PDFs — even scanned ones
 The agent can map, search, read, and render PDFs. Scanned pages with no text layer get rendered to PNGs and analyzed by a vision model, so specs, docs, and papers are all readable.
 

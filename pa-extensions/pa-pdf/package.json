@@ -2,10 +2,12 @@
   "name": "pa-pdf",
   "private": true,
   "version": "0.1.0",
-  "description": "Baked pa extension: pdf_map tool. Extracts a PDF once into a cached text file with per-page offsets, then reports the document's shape (pages, tokens, scanned pages) without returning body text. Borrows pdf-parse from pa-rag rather than duplicating 30MB.",
+  "description": "Baked pa extension: pdf_map tool. Extracts a PDF once into a cached text file with per-page offsets, then reports the document's shape (pages, tokens, scanned pages) without returning body text.",
   "type": "module",
   "pi": {
     "extensions": ["./index.ts"]
   },
-  "dependencies": {}
+  "dependencies": {
+    "pdf-parse": "1.1.4"
+  }
 }

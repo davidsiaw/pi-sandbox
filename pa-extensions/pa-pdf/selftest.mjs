@@ -15,8 +15,7 @@
  *   Regenerate with fixtures/make-fixtures.py; see that file.
  *
  * Guards the things most likely to break silently:
- *   (1) pdf-parse still resolves — it is BORROWED from pa-rag's node_modules,
- *       so a pa-rag dependency change breaks pa-pdf at a distance;
+ *   (1) pdf-parse still resolves from this extension's own node_modules;
  *   (2) per-page offsets actually address the right page in the cached text
  *       (this is what pdf_read and pdf_search will be built on);
  *   (3) pages are separated by form feed, so the cache stays greppable;
@@ -68,12 +67,12 @@ try {
 }
 const { loadPdf, loadPdfParse, formatRanges, PAGE_SEP, parsePageSpec, readPages, searchPages, pageAtOffset, renderPages, findPdftoppm } = mod;
 
-// (1) the borrowed dependency still resolves
+// (1) the pdf-parse dependency resolves
 try {
 	const fn = loadPdfParse();
-	check("pdf-parse resolves (borrowed from pa-rag)", typeof fn === "function");
+	check("pdf-parse resolves", typeof fn === "function");
 } catch (err) {
-	check("pdf-parse resolves (borrowed from pa-rag)", false, err.message);
+	check("pdf-parse resolves", false, err.message);
 	console.log("\nselftest: cannot continue without pdf-parse");
 	process.exit(1);
 }

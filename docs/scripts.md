@@ -192,6 +192,10 @@ truth. Example consumer: `pa-inspect-image` depends on
 `@silvia-odwyer/photon-node` (pure WASM, same lib pi uses) to convert images to
 PNG before sending them to the vision model.
 
+In the same RUN layer (so the deleted bytes never reach the image) it prunes
+known-heavy packages: `onnxruntime-node` (pa-uitag) loses its darwin/win32 and
+CUDA/TensorRT binaries, and `pdf-parse` (pa-pdf) loses its test corpus.
+
 ## scripts/install-pa-apt.sh (root)
 
 Bakes `/usr/local/bin/pa-apt` and `/etc/profile.d/pa-apt.sh`.
@@ -253,51 +257,6 @@ minified bundle the `pi` bin actually runs; the anchor for the release banner en
 at the backtick after `update`, so it cannot match the `update --extensions`
 banner below it. Idempotent, and **fails the build** if a future pi release moves
 the anchor.
-
-## scripts/patch-rag-batch.sh (root)
-
-Runs after `install-rag-model.sh`, once `pa-rag`'s `node_modules` exist. Patches
-`pi-local-rag`'s `embed.ts` to cap the embedding batch size and truncate at the
-embedding model's real token limit.
-
-Upstream hardcodes `BATCH_SIZE = 64` and passes no `truncation`.
-`all-MiniLM-L6-v2` is a 512-token model, real source chunks reach ~830 tokens,
-and attention is O(n²) in sequence length — so one batch peaks at **~2.2 GB
-RSS**, which the kernel OOM-kills (exit 137) inside Docker Desktop's ~3.8 GB VM.
-The patch defaults the batch to **8** (~451 MB peak) and adds
-`truncation: true, max_length: 512`. `PA_RAG_BATCH_SIZE` overrides the default at
-runtime.
-
-A build-time patch rather than a fork, for the same reason as `upstream.ts`:
-pa-rag runs pi-local-rag's real code. Uses the same `node - "$FILE" <<'PATCH'`
-idiom as `install-pi.sh` and `patch-auth2api.sh`, and **fails the build loudly**
-if upstream's `BATCH_SIZE` declaration or batched embedder call is not found
-rather than silently leaving the OOM in place. Idempotent: re-running on an
-already-patched file is a no-op.
-
-See [rag.md](rag.md) for the measured batch/RSS table and the failure symptom.
-
-## scripts/patch-rag-jsonl.sh (root)
-
-Adds a `.jsonl` / `.ndjson` branch to `pi-local-rag`'s `extractText()` that
-delegates to a `globalThis.__paRagExtractJsonl` hook, which `pa-rag` installs in
-`upstream.ts`. The parser itself (`extractSessionText`) lives in
-`pa-extensions/pa-rag/walk.ts`.
-
-Why it exists: a pi session transcript is one JSON object per line, and a line can
-carry a whole assistant turn — thinking, several text blocks, tool calls and their
-results. Upstream's chunker is line-based, so one line became one chunk of JSON
-syntax and tool output, whose embedding matched nothing in particular and
-everything by accident. Session indexing is now opt-in
-(`PA_RAG_INDEX_SESSIONS=1`), and this patch is what makes the opt-in worth having:
-it indexes `role: text` prose instead.
-
-Delegating rather than inlining the parser keeps **one** implementation, in our own
-source, unit-tested by `selftest.mjs` — rather than burying real logic in a bash
-heredoc that patches a dependency. The patch is **inert without the hook**: it
-falls through to upstream's normal UTF-8 read, so a plain `pi-local-rag` install
-behaves exactly as before. Fails the build loudly if upstream's extraction path
-moves; idempotent.
 
 ## scripts/install-mise.sh (root)
 

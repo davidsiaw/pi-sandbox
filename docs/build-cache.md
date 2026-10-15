@@ -81,9 +81,9 @@ Bumping is then a deliberate edit rather than a surprise.
 
 ### 4. Volatile files sat above expensive steps
 
-`COPY pa-extensions` used to sit above six npm installs (pa-rag's tree alone is
-329 MB), the 23 MB RAG model bake, the ONNX Runtime prune, two upstream patches
-and the uitag model bake. Editing one comment in one extension re-ran all of it.
+`COPY pa-extensions` used to sit above the npm installs (at the time including a
+329 MB RAG extension, its model bake and patches, since removed) and the uitag
+model bake. Editing one comment in one extension re-ran all of it.
 
 **Fix:** the manifest/source split — copy only `package.json` (+ lockfiles),
 install dependencies, bake models, and copy extension **source** last. See the
@@ -98,8 +98,7 @@ Top to bottom, cheapest-to-invalidate last:
 2. third-party & slow     apt, Node, Chromium, mise, CloakBrowser, auth2api
    ------------------------------------------------------------------ the line
 3. dependency manifests   pa-extensions/*/package.json (+ lockfiles) ONLY
-4. expensive installs     npm installs, RAG model bake, ONNX prune, patches,
-                          uitag model bake
+4. expensive installs     npm installs (+ ONNX prune), uitag model bake
 5. source                 COPY pa-extensions   (+ the --verify guard)
 6. prose & runtime files  pa-skills, docs, APPEND_SYSTEM.base.md, entrypoint
 7. pi itself              install-pi.sh (PI_VERSION changes nightly, so last)

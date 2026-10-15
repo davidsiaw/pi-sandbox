@@ -27,6 +27,27 @@ fi
 VERIFY_ONLY=0
 [ "${1:-}" = "--verify" ] && VERIFY_ONLY=1
 
+# Strip dead weight from known-heavy packages. Must run in the same RUN layer as
+# the npm install, or the deleted bytes stay in the layer below and the image
+# does not shrink.
+prune_node_modules() {
+  local nm="$1"
+  # onnxruntime-node (pa-uitag) ships prebuilt binaries for every platform. This
+  # sandbox is CPU-only Linux, so darwin, win32 and CUDA/TensorRT providers are
+  # dead weight. The napi ABI dir is version-dependent, so glob, don't hardcode.
+  local ort_bin="$nm/onnxruntime-node/bin"
+  if [ -d "$ort_bin" ]; then
+    echo "  pruning onnxruntime-node platform binaries (before: $(du -sh "$ort_bin" | cut -f1))"
+    find "$ort_bin" -maxdepth 2 -type d \( -name darwin -o -name win32 \) -exec rm -rf {} +
+    find "$ort_bin" -type f \
+      \( -name 'libonnxruntime_providers_cuda.so*' \
+      -o -name 'libonnxruntime_providers_tensorrt.so*' \) -delete
+    echo "  onnxruntime-node now: $(du -sh "$ort_bin" | cut -f1)"
+  fi
+  # pdf-parse (pa-pdf) ships a large test-asset corpus never read at runtime.
+  rm -rf "$nm/pdf-parse/test"
+}
+
 missing=0
 for dir in "$EXT_ROOT"/*/; do
   pkg="${dir}package.json"
@@ -52,6 +73,7 @@ for dir in "$EXT_ROOT"/*/; do
 
   echo "extension $(basename "$dir"): installing dependencies"
   ( cd "$dir" && npm install --omit=dev --no-audit --no-fund --cache /tmp/npm-ext-cache )
+  prune_node_modules "${dir}node_modules"
 done
 
 if [ "$missing" != "0" ]; then

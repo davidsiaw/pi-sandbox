@@ -841,54 +841,6 @@ else
 fi
 rm -rf "$pkgdir"
 
-# pa-rag's upstream loader must survive being run THROUGH JITI, which is how pi
-# loads extensions -- not through plain node, which is how the selftests run.
-#
-# That gap shipped a fully broken pa-rag: an `await import()` added inside
-# upstream.ts's load() was hoisted by jiti's ESM->CJS transform above the `const
-# jitiImport` it depends on, so every call threw "Cannot access 'jitiImport'
-# before initialization" -- killing rag_search and all indexing. Plain-node ESM
-# handles that shape fine, so ~90 selftest checks stayed green while the extension
-# was dead in the real container.
-#
-# Scoped to pa-rag on purpose. A bare jiti import is NOT a valid check for every
-# extension: several (pa-anthropic-oauth, pa-inspect-image) import pi's own
-# packages (@earendil-works/pi-tui, pi-ai/compat), which only resolve inside pi's
-# module context -- they fail under standalone jiti while working perfectly under
-# `pi -e`, which the pa-example check above already covers. upstream.ts imports
-# only node builtins plus its own siblings, so it CAN be loaded standalone, and it
-# is where the hoisting hazard lives.
-#
-# Importing is not sufficient (the bug was inside a function), so this CALLS
-# load(). A missing-dependency error is fine; a TDZ/hoisting error is not.
-# run_clean, not run: the entrypoint's "Adding agent user..." goes to stderr and
-# 2>&1 would fold it into the result string -- which is exactly how the first
-# version of this check reported a bogus failure.
-out="$(run_clean 'cat > /tmp/jitiload.mjs <<"JEOF"
-import { join } from "node:path";
-const JITI = "/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti";
-const { createJiti } = await import(JITI + "/lib/jiti.mjs");
-const dir = "/opt/pa/extensions/pa-rag";
-const jiti = createJiti("file://" + dir + "/", { interopDefault: true });
-let verdict = "JITI_LOAD_OK";
-try {
-  const up = await jiti.import(join(dir, "upstream.ts"));
-  await up.load(dir);
-} catch (err) {
-  const msg = String(err && err.message);
-  if (/before initialization|is not defined|Cannot access/.test(msg)) {
-    verdict = "JITI_LOAD_FAIL " + msg.slice(0, 140);
-  }
-}
-process.stdout.write(verdict);
-JEOF
-node /tmp/jitiload.mjs 2>/dev/null')"
-if echo "$out" | grep -q JITI_LOAD_OK; then
-  pass "pa-rag upstream loader runs under jiti (pi's real loader)"
-else
-  fail "pa-rag broken under jiti: $(echo "$out" | sed 's/^.*JITI_LOAD_FAIL //')"
-fi
-
 # yousoro-browse behavioral guard: fingerprint init script + block/challenge
 # detection (visible-text, not raw HTML — the 403-then-redirect fix) + markdown
 # rendering + the automatic escalation to CloakBrowser on a block. Auth-free,
@@ -987,8 +939,6 @@ fi
 # offsets back to the right page and stay literal by default; pdf_read must stay
 # bounded and hand back a cursor that round-trips. Pages with no text layer must
 # be reported rather than silently returned empty.
-# Also guards the BORROW: pdf-parse comes from pa-rag's node_modules, so a
-# pa-rag dependency change breaks pa-pdf at a distance.
 out="$(run 'cd /opt/pa/extensions/pa-pdf && node selftest.mjs 2>&1')"
 if echo "$out" | grep -q 'selftest: all checks passed'; then
   pass "pa-pdf selftest (offsets + windowing + search + render)"
@@ -996,6 +946,12 @@ else
   fail "pa-pdf selftest failed"
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
+
+# pdf-parse must be pa-pdf's OWN dependency. It used to be borrowed from a
+# sibling extension's node_modules, which broke pa-pdf at a distance.
+run 'test -f /opt/pa/extensions/pa-pdf/node_modules/pdf-parse/lib/pdf-parse.js && echo PDFPARSE_OWNED' \
+  | grep -q PDFPARSE_OWNED \
+  && pass "pa-pdf owns its pdf-parse dep" || fail "pa-pdf pdf-parse dep missing"
 
 # pa-token-usage guard: CSV row/header agreement, cost-0 handling (local models
 # and subscription billing report 0, which must not become Infinity), and the
@@ -1019,20 +975,28 @@ run 'test -e /opt/pa/extensions/pa-token-usage/token-usage && echo HAS_DATA || e
   && pass "pa-token-usage ships no baked data dir (CSVs go to the host mount)" \
   || fail "pa-token-usage/token-usage is baked into the image; rows would be lost on exit"
 
-# The uitag model must be baked, exactly like the pa-rag one. This is the check
+# The uitag model must be baked. This is the check
 # that was missing when detect_ui_elements shipped registered-but-modelless: the
 # selftest below SKIPs without a model, so on its own it stays green while the
 # published image quietly lacks the tool.
 run 'test -f /opt/pa/models/uitag/yolo-ui.onnx && echo UITAG_MODEL_BAKED' | grep -q UITAG_MODEL_BAKED \
   && pass "pa-uitag model baked into image" || fail "pa-uitag model missing from /opt/pa/models/uitag"
 
-# photon must be pa-uitag's OWN dependency. It used to be borrowed from pa-rag,
-# where it exists only transitively via pi-local-rag -- so an upstream patch bump
-# could have dropped it and silently killed detect_ui_elements. onnxruntime-node
-# is still borrowed on purpose (31 MB); photon is 2.2 MB and not worth the risk.
+# photon and onnxruntime-node must be pa-uitag's OWN dependencies. Both used to
+# be borrowed from a sibling extension's node_modules, so a change there could
+# silently kill detect_ui_elements.
 run 'test -d /opt/pa/extensions/pa-uitag/node_modules/@silvia-odwyer/photon-node && echo PHOTON_OWNED' \
   | grep -q PHOTON_OWNED \
-  && pass "pa-uitag owns its photon dep (not borrowed from pa-rag)" || fail "pa-uitag photon dep missing"
+  && pass "pa-uitag owns its photon dep" || fail "pa-uitag photon dep missing"
+run 'test -f /opt/pa/extensions/pa-uitag/node_modules/onnxruntime-node/dist/index.js && echo ORT_OWNED' \
+  | grep -q ORT_OWNED \
+  && pass "pa-uitag owns its onnxruntime-node dep" || fail "pa-uitag onnxruntime-node dep missing"
+
+# The ORT prune must have happened (in the npm-install layer). An unpruned
+# onnxruntime-node carries darwin/win32 binaries the image never uses.
+run 'ls /opt/pa/extensions/pa-uitag/node_modules/onnxruntime-node/bin/*/ 2>/dev/null | grep -qE "^(darwin|win32)" && echo UNPRUNED || echo PRUNED' \
+  | grep -q '^PRUNED' \
+  && pass "pa-uitag onnxruntime-node pruned to linux" || fail "pa-uitag onnxruntime-node still carries darwin/win32 binaries"
 
 # pa-uitag guard: box geometry (in-bounds, positive area, integer coords) and
 # the contract that matters -- cropping by a reported box yields exactly that
@@ -1106,222 +1070,6 @@ if echo "$out" | grep -q 'selftest: all checks passed'; then
 else
   fail "pa-cloakbrowser selftest failed"
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
-fi
-
-# pa-rag: the walker must include dotfiles / dot-dirs / past pi sessions while
-# excluding .git, node_modules and its own store, and the upstream loader must
-# still reach pi-local-rag's submodules through jiti. PA_RAG_SKIP_EMBED skips
-# the ONNX inference phase: it is far too slow under QEMU emulation in CI, and
-# the structural checks are what actually regress.
-out="$(run 'cd /opt/pa/extensions/pa-rag && PA_RAG_SKIP_EMBED=1 node selftest.mjs 2>&1')"
-if echo "$out" | grep -q 'selftest: all checks passed'; then
-  pass "pa-rag selftest (walker + upstream loader + slicer)"
-else
-  fail "pa-rag selftest failed"
-  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
-fi
-
-# pa-rag must never hand upstream the whole file list. indexFiles() holds every
-# chunk and vector in memory until one commit at the end, so peak memory is
-# O(repo): a big repo OOM-kills the container regardless of batch size. The
-# extension slices into SLICE_BYTES groups, which also makes each slice a commit
-# checkpoint that an interrupted pass resumes from by hash.
-# The pass itself runs in a child process (indexer.mjs), so the slicing lives
-# there; index.ts only supplies sliceBytes over the config handshake.
-run 'grep -q "sliceFiles" /opt/pa/extensions/pa-rag/indexer.mjs && grep -q "sliceBytes: SLICE_BYTES" /opt/pa/extensions/pa-rag/index.ts && echo SLICED' | grep -q SLICED \
-  && pass "pa-rag indexes in slices (memory is O(slice), not O(repo))" \
-  || fail "pa-rag lost its sliced indexing; large repos will OOM"
-run 'grep -qE "indexFiles\(\s*files" /opt/pa/extensions/pa-rag/indexer.mjs && echo UNSLICED || echo OK_NO_WHOLE_LIST' \
-  | grep -q OK_NO_WHOLE_LIST \
-  && pass "pa-rag never passes the whole file list to upstream" \
-  || fail "pa-rag calls indexFiles() with the entire walk result"
-
-# The 23MB embedding model must be baked, not downloaded at runtime: a cold
-# container has no reason to hit the network, and QEMU builds must not stall.
-run 'test -d /opt/pa/models/Xenova/all-MiniLM-L6-v2 && echo MODEL_BAKED' | grep -q MODEL_BAKED \
-  && pass "pa-rag embedding model baked into image" || fail "pa-rag model missing from /opt/pa/models"
-
-# The batch-size patch must be applied. Upstream's hardcoded BATCH_SIZE=64 peaks
-# at ~2.2GB RSS for one batch of real (~3300-char) source chunks, which OOM-kills
-# the container inside Docker Desktop's ~3.8GB VM -- exit 137, schema-only index
-# DB, and a TUI killed mid-render leaving the terminal in raw mode.
-run 'grep -q "PA_RAG_BATCH_SIZE" /opt/pa/extensions/pa-rag/node_modules/pi-local-rag/embed.ts && echo BATCH_PATCHED' \
-  | grep -q BATCH_PATCHED \
-  && pass "pa-rag embed batch-size patch applied" || fail "pa-rag embed.ts not patched (indexing will OOM)"
-run 'grep -q "max_length: 512" /opt/pa/extensions/pa-rag/node_modules/pi-local-rag/embed.ts && echo TRUNC_PATCHED' \
-  | grep -q TRUNC_PATCHED \
-  && pass "pa-rag embed truncates at the model's 512-token limit" || fail "pa-rag embed.ts missing truncation"
-
-# Assert the patch RESOLVES to a safe default, not merely that the text is there.
-out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs").then(async(j)=>{const P="/opt/pa/extensions/pa-rag/node_modules/pi-local-rag";const jiti=j.createJiti("file://"+P+"/",{interopDefault:true});const m=await jiti.import(P+"/embed.ts");process.stdout.write(m.BATCH_SIZE===8?"BATCH_8":"BAD "+m.BATCH_SIZE)})'\'' ')"
-echo "$out" | grep -q BATCH_8 \
-  && pass "pa-rag BATCH_SIZE resolves to 8" || fail "pa-rag BATCH_SIZE wrong: $out"
-
-# The batch size must be resolved PER CALL, not frozen at module load. pa-rag
-# lowers it to 2 for unattended background passes (~314MB peak vs ~800MB at 8)
-# and restores 8 for an explicit /rag-index. If resolveBatchSize() ever goes back
-# to being read once at import time, the low-memory background mode silently
-# stops working and big repos get memory-hungry again.
-out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs").then(async(j)=>{const P="/opt/pa/extensions/pa-rag/node_modules/pi-local-rag";const jiti=j.createJiti("file://"+P+"/",{interopDefault:true});const m=await jiti.import(P+"/embed.ts");if(typeof m.resolveBatchSize!=="function"){process.stdout.write("NO_RESOLVER");return;}process.env.PA_RAG_BATCH_SIZE="2";const lo=m.resolveBatchSize();process.env.PA_RAG_BATCH_SIZE="8";const hi=m.resolveBatchSize();delete process.env.PA_RAG_BATCH_SIZE;const def=m.resolveBatchSize();process.stdout.write(lo===2&&hi===8&&def===8?"PERCALL_OK":"BAD lo="+lo+" hi="+hi+" def="+def)})'\'' ')"
-echo "$out" | grep -q PERCALL_OK \
-  && pass "pa-rag batch size is resolved per call (background can go low-memory)" \
-  || fail "pa-rag batch size not per-call: $out"
-
-# The extension must actually USE the two modes, and must not record throughput
-# from a throttled background pass (its elapsed time is mostly deliberate sleep,
-# so measuring it would poison every future ETA).
-run 'grep -q "BACKGROUND_BATCH_SIZE" /opt/pa/extensions/pa-rag/index.ts && grep -q "BACKGROUND_DUTY_CYCLE" /opt/pa/extensions/pa-rag/index.ts && echo MODES' \
-  | grep -q MODES \
-  && pass "pa-rag has low-memory + duty-cycled background mode" \
-  || fail "pa-rag lost its background resource limits"
-run 'grep -q "!opts.background && result.chunks > 200" /opt/pa/extensions/pa-rag/index.ts && echo GUARDED' \
-  | grep -q GUARDED \
-  && pass "pa-rag does not calibrate throughput from throttled passes" \
-  || fail "pa-rag would record throttled background time as throughput"
-
-# A pass that can run for hours needs live progress, and it must be a footer
-# status (one mutable line) rather than notifications (permanent transcript
-# spam). Guarded by ctx.hasUI so print/JSON runs stay clean, and cleared on
-# shutdown so a resumed session does not inherit a frozen bar.
-run 'grep -q "setStatus" /opt/pa/extensions/pa-rag/index.ts && echo STATUS' | grep -q STATUS \
-  && pass "pa-rag reports progress via footer status" \
-  || fail "pa-rag has no live progress reporting"
-run 'grep -q "ctx.hasUI ? makeStatus(ctx) : undefined" /opt/pa/extensions/pa-rag/index.ts && echo GUARD' | grep -q GUARD \
-  && pass "pa-rag progress is guarded by ctx.hasUI (no print-mode noise)" \
-  || fail "pa-rag progress not guarded for non-UI modes"
-# Fine-grained progress crosses the IPC boundary: indexer.mjs forwards upstream's
-# onEmbed as a per-chunk `chunks` event, and index.ts turns it into onChunks.
-run 'grep -q "onEmbed" /opt/pa/extensions/pa-rag/indexer.mjs && grep -q "t: \"chunks\"" /opt/pa/extensions/pa-rag/indexer.mjs && grep -q "onChunks" /opt/pa/extensions/pa-rag/index.ts && echo FINE' | grep -q FINE \
-  && pass "pa-rag progress updates within a slice, not just at boundaries" \
-  || fail "pa-rag progress only updates per slice (coarse on big repos)"
-# The denominator must self-correct: BYTES_PER_CHUNK is a guess that measured
-# 1854 vs 3324 on two real trees, so a fixed denominator renders >100%.
-run 'grep -q "Math.max(estTotalChunks, doneChunks)" /opt/pa/extensions/pa-rag/index.ts && echo CLAMPED' \
-  | grep -q CLAMPED \
-  && pass "pa-rag progress denominator self-corrects (never exceeds 100%)" \
-  || fail "pa-rag progress can render over 100%"
-
-# Retrieval-quality fixes, driven by feedback from an agent working a large
-# codebase that chose rg over rag_search. Each of these is a measured symptom, so
-# each gets a guard.
-
-# Session transcripts must be excluded by default: one scored 1.000 on the exact
-# identifier `partial_capture_amount_cents` and outranked every real hit, with
-# content that was an unrelated regex dump.
-run 'grep -q "SESSION_DIRS" /opt/pa/extensions/pa-rag/walk.ts && echo SESSIONS_GATED' \
-  | grep -q SESSIONS_GATED \
-  && pass "pa-rag gates session transcripts behind an opt-in" \
-  || fail "pa-rag still indexes .pi-sessions unconditionally"
-out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/opt/pa/extensions/pa-rag/walk.ts").then(m=>{const s=m.SKIP_DIRS;process.stdout.write(s.has(".pi-sessions")?"EXCLUDED":"INCLUDED")})'\'' ')"
-echo "$out" | grep -q EXCLUDED \
-  && pass "pa-rag excludes .pi-sessions from the default walk" \
-  || fail "pa-rag default walk still includes sessions: $out"
-
-# When sessions ARE opted in, they must be indexed as parsed prose. Embedding raw
-# JSONL (one line can be a whole assistant turn) is what made them poison search.
-run 'grep -q "__paRagExtractJsonl" /opt/pa/extensions/pa-rag/node_modules/pi-local-rag/chunking.ts && echo JSONL_PATCHED' \
-  | grep -q JSONL_PATCHED \
-  && pass "pa-rag .jsonl extraction patch applied to upstream" \
-  || fail "pa-rag jsonl patch missing (sessions would embed as raw JSON)"
-out="$(run 'cd /opt/pa/extensions/pa-rag && node -e '\''import("/opt/pa/extensions/pa-rag/walk.ts").then(m=>{const t=m.extractSessionText(JSON.stringify({type:"message",message:{role:"user",content:"hello world"}}));process.stdout.write(t==="user: hello world"?"PARSER_OK":"BAD:"+t)})'\'' ')"
-echo "$out" | grep -q PARSER_OK \
-  && pass "pa-rag session parser emits role-labelled prose" \
-  || fail "pa-rag session parser wrong: $out"
-
-# Excerpts must not end mid-token. The old renderer did content.slice(0, 1200),
-# producing tails like "params = par" and "class_" that cost a follow-up read.
-run 'grep -q "truncateAtLine" /opt/pa/extensions/pa-rag/index.ts && echo LINE_SAFE' | grep -q LINE_SAFE \
-  && pass "pa-rag truncates excerpts on line boundaries" \
-  || fail "pa-rag still truncates excerpts mid-token"
-# Strip comment lines before checking: the docstring explaining this very fix
-# quotes the old `content.slice(0, 1200)`, which made the first version of this
-# check fail on its own documentation.
-run 'grep -vE "^[[:space:]]*(//|\*|/\*)" /opt/pa/extensions/pa-rag/index.ts | grep -qE "content\.slice\(0, *1200\)" && echo RAW_SLICE || echo NO_RAW_SLICE' \
-  | grep -q NO_RAW_SLICE \
-  && pass "pa-rag has no blind character slice left (outside comments)" \
-  || fail "pa-rag still contains the mid-token slice"
-
-# Path scoping was the single most-requested control ("the #1 reason I reach for
-# rg"), and it only works if the candidate set is over-fetched first: hybridSearch
-# truncates to topK internally, so filtering a limit-sized list starves results.
-run 'grep -q "path_include" /opt/pa/extensions/pa-rag/index.ts && grep -q "path_exclude" /opt/pa/extensions/pa-rag/index.ts && echo GLOBS' \
-  | grep -q GLOBS \
-  && pass "pa-rag exposes path_include / path_exclude" \
-  || fail "pa-rag has no path filters"
-run 'grep -q "CANDIDATE_MULTIPLIER" /opt/pa/extensions/pa-rag/index.ts && echo OVERFETCH' | grep -q OVERFETCH \
-  && pass "pa-rag over-fetches before filtering (filters do not starve results)" \
-  || fail "pa-rag filters a limit-sized list; path filters would return too few hits"
-
-# Same-file chunks used to eat the result budget (limit=8 returning 3 chunks of
-# one file); collapse to one entry per file.
-run 'grep -q "more chunk(s) in this file" /opt/pa/extensions/pa-rag/index.ts && echo COLLAPSED' | grep -q COLLAPSED \
-  && pass "pa-rag collapses chunks per file (limit means distinct files)" \
-  || fail "pa-rag returns duplicate chunks from one file"
-
-# Freshness: without it an agent cannot calibrate trust and greps anyway.
-run 'grep -q "describeFreshness" /opt/pa/extensions/pa-rag/index.ts && echo FRESH' | grep -q FRESH \
-  && pass "pa-rag reports index freshness in results" \
-  || fail "pa-rag results carry no freshness signal"
-
-# The impl/test bias must be strong enough to fix the REPORTED case: a spec at
-# 0.600 outranking the right answer at 0.463. 0.8 was tried and still lost
-# (0.480 > 0.463), so anything above 0.772 means the knob exists but does nothing.
-out="$(run 'grep -E "^const TEST_DOWNWEIGHT" /opt/pa/extensions/pa-rag/index.ts')"
-weight="$(echo "$out" | grep -oE '0\.[0-9]+')"
-if [ -n "$weight" ] && awk "BEGIN{exit !($weight < 0.772)}"; then
-  pass "pa-rag test down-weight ($weight) actually reorders the reported case"
-else
-  fail "pa-rag test down-weight too mild to fix spec-over-impl: $out"
-fi
-
-# Changing WHAT is indexed cannot be detected by upstream's per-file content
-# hashes, so an existing store would keep serving session chunks forever.
-run 'grep -q "INDEX_VERSION" /opt/pa/extensions/pa-rag/index.ts && echo VERSIONED' | grep -q VERSIONED \
-  && pass "pa-rag versions the store so policy changes force a rebuild" \
-  || fail "pa-rag cannot invalidate a store built under an older policy"
-
-# The probe cap must not sit below the auto-index budget, or every project
-# between the two limits wrongly falls into the "ask first" path.
-#
-# Evaluated as arithmetic rather than parsed as a number: the two constants are
-# written with different unit chains (`1024 * 1024 * 1024` vs `2 * 1024 * ...`),
-# so comparing leading integers compares GB against MB. This check's first
-# version did exactly that and reported a false failure. PROBE_CAP_BYTES is also
-# allowed to be expressed IN TERMS OF AUTO_INDEX_MAX_BYTES, so the expression is
-# evaluated with that identifier in scope.
-out="$(run 'node -e '\''const fs=require("fs");const s=fs.readFileSync("/opt/pa/extensions/pa-rag/index.ts","utf8");const expr=(n)=>{const m=s.match(new RegExp("const "+n+" = ([^;]+);"));return m?m[1]:"NaN";};const a=Function("return ("+expr("AUTO_INDEX_MAX_BYTES")+")")();const p=Function("AUTO_INDEX_MAX_BYTES","return ("+expr("PROBE_CAP_BYTES")+")")(a);process.stdout.write(Number.isFinite(a)&&Number.isFinite(p)&&p>=a?("CAPS_OK auto="+(a/1048576)+"MB probe="+(p/1048576)+"MB"):("BAD auto="+a+" probe="+p))'\'' ')"
-if echo "$out" | grep -q CAPS_OK; then
-  pass "pa-rag probe cap >= auto-index budget ($(echo "$out" | grep -oE 'auto=[0-9]+MB probe=[0-9]+MB'))"
-else
-  fail "pa-rag probe cap below auto-index budget: $out"
-fi
-
-# END-TO-END MEMORY GUARD. This is the check whose absence let the OOM ship: the
-# pa-rag selftest runs with PA_RAG_SKIP_EMBED=1 in CI and its fixture chunks are
-# tiny, so neither exercised a realistic batch. Embed 64 chunks at ~3300 chars
-# (the real p100 chunk size measured on this repo) and assert the process
-# SURVIVES -- an OOM kill here shows up as exit 137 rather than a failed check.
-out="$(run 'cd /opt/pa/extensions/pa-rag && cat > /tmp/memguard.mjs <<"MEOF"
-process.env.TRANSFORMERS_CACHE = "/opt/pa/models";
-process.env.HF_HOME = "/opt/pa/models";
-const P = "/opt/pa/extensions/pa-rag/node_modules";
-const { env, pipeline } = await import(P + "/@xenova/transformers/src/transformers.js");
-env.cacheDir = "/opt/pa/models";
-env.allowRemoteModels = false;
-const { createJiti } = await import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs");
-const jiti = createJiti("file://" + P + "/pi-local-rag/", { interopDefault: true });
-const embed = await jiti.import(P + "/pi-local-rag/embed.ts");
-const texts = Array.from({ length: 64 }, () => "word ".repeat(660));
-const vectors = await embed.embedBatch(texts);
-const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
-const ok = vectors.length === 64 && vectors[0].length === 384 && rss < 1500;
-process.stdout.write(ok ? "MEMGUARD_OK rss=" + rss : "BAD n=" + vectors.length + " dim=" + (vectors[0]||[]).length + " rss=" + rss);
-MEOF
-node /tmp/memguard.mjs 2>&1')"
-if echo "$out" | grep -q MEMGUARD_OK; then
-  pass "pa-rag embeds 64 real-sized chunks without OOM ($(echo "$out" | grep -oE 'rss=[0-9]+'))"
-else
-  fail "pa-rag embedding OOMs or misbehaves at realistic chunk size: $out"
 fi
 
 out="$(run 'diff -q /opt/pa/APPEND_SYSTEM.base.md "$HOME/.pi/agent/APPEND_SYSTEM.md" >/dev/null 2>&1 && echo SAME')"

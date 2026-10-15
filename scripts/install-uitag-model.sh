@@ -7,8 +7,7 @@ set -euo pipefail
 #   The YOLO detector bundled inside the `uitag` PyPI package (MIT), trained on
 #   GroundCUA (55K desktop screenshots, 3.56M human-verified annotations, MIT).
 #   It locates UI regions and classifies them into 8 coarse buckets. We ship it
-#   as ONNX so it runs under onnxruntime-node, which the image already carries
-#   for pa-rag.
+#   as ONNX so it runs under onnxruntime-node, a pinned dependency of pa-uitag.
 #
 # WHY NOT `pip install uitag`
 #   That pulls ~3GB of hard dependencies (mlx, mlx-lm, mlx-vlm, transformers) --
@@ -19,8 +18,8 @@ set -euo pipefail
 #   Exporting the model once and running it in Node costs ~36MB and nothing else.
 #
 # WHY THE MODEL IS FETCHED, NOT COMMITTED
-#   A 36MB binary in git bloats every clone forever. pa-rag sets the precedent:
-#   produce it at build time into /opt/pa/models. Whatever the source, the file
+#   A 36MB binary in git bloats every clone forever, so it is produced at build
+#   time into /opt/pa/models. Whatever the source, the file
 #   is size- and signature-checked below; a silent HTML error page must not be
 #   allowed to masquerade as a model (that exact failure -- a 404 page saved as
 #   .pt -- cost real debugging time during development).
@@ -93,9 +92,9 @@ fi
 mv "$MODEL_PATH.tmp" "$MODEL_PATH"
 
 # Verify the model actually loads and produces the expected output shape, using
-# the onnxruntime-node that pa-rag already installed. Baking a model that cannot
+# pa-uitag's own onnxruntime-node. Baking a model that cannot
 # be loaded is worse than not baking one, because it fails on the user's prompt.
-ORT="/opt/pa/extensions/pa-rag/node_modules/onnxruntime-node/dist/index.js"
+ORT="$EXT_DIR/node_modules/onnxruntime-node/dist/index.js"
 if [ -f "$ORT" ]; then
   node --input-type=module -e "
     const { createRequire } = await import('node:module');

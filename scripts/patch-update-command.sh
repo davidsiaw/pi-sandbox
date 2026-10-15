@@ -42,7 +42,7 @@ set -euo pipefail
 #   "pa" -- including `pi --help`, which is still the right command to type inside
 #   the container. Two sentences are the smaller change.
 #
-#   Same idiom as install-pi.sh and patch-rag-batch.sh: assert the anchor, fail
+#   Same idiom as install-pi.sh: assert the anchor, fail
 #   the build if upstream restructures.
 #
 # WHY BOTH A PRETTY AND A MINIFIED ANCHOR

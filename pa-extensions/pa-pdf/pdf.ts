@@ -9,9 +9,8 @@
  * The deadline and page cap below are guards against PATHOLOGICAL files (broken
  * xref, giant scans, font bombs), not the common case.
  *
- * pdf-parse is BORROWED from pa-rag's node_modules rather than depended on
- * (30MB, and already in the image). That coupling is why loadPdfParse() fails
- * loudly instead of degrading. See docs/pdf.md.
+ * pdf-parse is a declared dependency of this extension. loadPdfParse() fails
+ * loudly instead of degrading if it is missing. See docs/pdf.md.
  */
 
 import { spawnSync } from "node:child_process";
@@ -86,7 +85,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /**
  * Walk up `node_modules` chains looking for a package. Plain fs checks rather
  * than require.resolve, which would go through the exports map we are trying to
- * sidestep. Same approach as pa-rag/upstream.ts.
+ * sidestep.
  */
 function findPackageDir(name: string, from: string): string | null {
 	let dir = from;
@@ -119,14 +118,9 @@ type PdfParse = (
 
 let cachedPdfParse: PdfParse | null = null;
 
-/** Candidate roots to search, nearest-first. pa-rag is the borrow source. */
+/** Candidate roots to search, nearest-first. */
 function searchRoots(): string[] {
-	return [
-		HERE,
-		"/opt/pa/extensions/pa-rag",
-		join(HERE, "..", "pa-rag"),
-		process.cwd(),
-	];
+	return [HERE, process.cwd()];
 }
 
 export function loadPdfParse(): PdfParse {
@@ -139,25 +133,23 @@ export function loadPdfParse(): PdfParse {
 	}
 	if (!pkgDir) {
 		throw new Error(
-			"pa-pdf: could not find pdf-parse. It is borrowed from pa-rag's node_modules " +
-				"(a transitive dependency of pi-local-rag). Searched: " +
-				searchRoots().join(", ") +
-				". If pa-rag's dependencies changed, pa-pdf needs its own dependency instead.",
+			"pa-pdf: could not find pdf-parse. It is a declared dependency of pa-pdf; " +
+				"run `npm install` in this extension directory. Searched: " +
+				searchRoots().join(", "),
 		);
 	}
 
 	// lib/, NEVER the package root: pdf-parse's index.js runs a debug block that
 	// reads a test PDF off disk when it thinks it is not being required as a
-	// module. pi-local-rag avoids the root for the same reason. Do not "simplify"
-	// this to require("pdf-parse").
+	// module. Do not "simplify" this to require("pdf-parse").
 	const entry = join(pkgDir, "lib", "pdf-parse.js");
 	if (!existsSync(entry)) {
 		throw new Error(`pa-pdf: found pdf-parse at ${pkgDir} but ${entry} is missing.`);
 	}
 
 	// createRequire, not import(): the file is CommonJS, and a dynamic import in
-	// a function body gets hoisted by jiti's ESM->CJS transform (the failure
-	// mode documented in pa-rag/upstream.ts).
+	// a function body gets hoisted by jiti's ESM->CJS transform, which turns it
+	// into a "Cannot access before initialization" error at load time.
 	const require_ = createRequire(import.meta.url);
 	cachedPdfParse = require_(entry) as PdfParse;
 	return cachedPdfParse;

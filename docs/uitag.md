@@ -9,8 +9,8 @@ individually.
   (`index.ts` = tool, `detect.ts` = inference)
 - Model baked at `/opt/pa/models/uitag/yolo-ui.onnx` (~36 MB) by
   `scripts/install-uitag-model.sh`
-- Reuses `onnxruntime-node` and `photon-node` from **pa-rag's** `node_modules`;
-  declares no heavy dependencies of its own
+- Declares its own `onnxruntime-node` (pinned to 1.14.0, pruned to Linux CPU
+  binaries by `scripts/install-extension-deps.sh`) and `photon-node`
 
 ## What it is for
 
@@ -96,9 +96,8 @@ Two limits worth knowing before trusting output:
 
 What is worth taking is the **model**: the 18 MB YOLO detector bundled in the
 wheel, trained on GroundCUA (55K screenshots, 3.56M human-verified annotations,
-MIT). Exported once to ONNX it is 36 MB and runs under the `onnxruntime-node`
-the image already carries for pa-rag. Net cost: **one 36 MB file**, no Python, no
-torch, no GPU — and ONNX + WASM are arch-neutral, so multi-arch is free.
+MIT). Exported once to ONNX it is 36 MB and runs under `onnxruntime-node`
+(~31 MB once pruned to Linux CPU binaries). No Python, no torch, no GPU — and ONNX + WASM are arch-neutral, so multi-arch is free.
 
 ## Fidelity: measured, and not at parity
 
@@ -128,7 +127,7 @@ INT8 dynamic quantization shrinks the model 36 MB → 9.4 MB but costs recall
 ## Baking the model
 
 The model is **built at image-build time**, not committed — a 36 MB binary in git
-bloats every clone forever (pa-rag sets the same precedent). It requires no
+bloats every clone forever. It requires no
 setup: the `uitag-export` stage in the Dockerfile does the whole thing.
 
 ```
