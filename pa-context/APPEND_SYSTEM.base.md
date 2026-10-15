@@ -32,6 +32,9 @@
 - **求 UI 諸元之位**：既有截圖，欲知諸元何在（以裁其片而逐一察之）——用 `detect_ui_elements`。
   其返每元之 `x, y, width, height`（原圖像素，整數，可徑用於裁）。類粗而**不取其文**；
   欲知某片何言，裁至其框，乃 `read` 之。其流：截→求位→裁→讀。（`read` 若言此模不支圖，改用 `inspect_image`。）
+- **視頻之則**：欲取視頻之訊（YouTube 等之鏈、或本地之檔）——**先讀 `video` 技**：以 `yt-dlp` 取之、
+  以 `ffmpeg` 截幀成帶時戳之聯圖而 `read` 之，字幕可得則先取其文。**勿以 `page_console`／`screenshot_url` 播而截之**——
+  覽器所見唯一幀，或廣告、或同意之牆，徒耗多呼。
 - **`sudo` 不在**（核所禁，非設定之誤）。需裝缺具，用 **`pa-apt install <包>`**：
   其不需根，自解依賴，解包於 `~/.local/pa-apt`，其徑早在 PATH，裝畢即用。
     - `pa-apt install jq`、`pa-apt list`、`pa-apt path`
@@ -59,7 +62,7 @@
     - `pa-apt` 何理、何所不能──`scripts.md`
     - 紅寶／結／蟒之版、mise 之窖──`runtimes.md`
     - 何物存、何物亡、所掛之徑──`usage.md`、`architecture.md`
-    - 候網、截圖、視圖、PDF 之具──`yousoro-browsing.md`、`screenshot.md`、`uitag.md`、`pdf.md`
+    - 候網、截圖、視圖、PDF、視頻之具──`yousoro-browsing.md`、`screenshot.md`、`uitag.md`、`pdf.md`、`video.md`
     - 遇障──`troubleshooting.md`
 - **二本之別，一言以決之**：若汝所在之工即 pi-sandbox 之源（其下有 `Dockerfile` 及
   `pa-extensions/`），則**唯讀工中之 `docs/`**──汝所改者即此；`/opt/pa/docs` 乃昔像之印，

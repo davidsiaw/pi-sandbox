@@ -66,6 +66,9 @@ fi
 if [ -n "${PA_UITAG_MODEL_URL:-}" ]; then
   BUILD_ARGS+=(--build-arg "PA_UITAG_MODEL_URL=${PA_UITAG_MODEL_URL}")
 fi
+if [ -n "${YTDLP_VERSION:-}" ]; then
+  BUILD_ARGS+=(--build-arg "YTDLP_VERSION=${YTDLP_VERSION}")
+fi
 
 set -x
 docker buildx build \

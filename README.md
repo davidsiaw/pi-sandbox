@@ -16,6 +16,9 @@ The agent can map, search, read, and render PDFs. Scanned pages with no text lay
 ### 🖼️ Analyze images with a vision model
 Send screenshots, diagrams, or photos to the agent and it inspects them with a dedicated vision-capable model — great for UI review, layout verification, or reading cropped regions.
 
+### 🎬 Get information out of videos
+Hand the agent a YouTube (or Vimeo, X, direct `.mp4`) link or a local video file and it downloads it with **yt-dlp**, pulls the transcript from subtitles, and cuts **timestamped contact sheets** and full frames with **ffmpeg** to read with its vision model — so it can tell you what was said *and* what was on screen, with timestamps.
+
 ### 📸 Capture and inspect web pages
 The agent can render any URL in a stealth Chromium (real WebGL GPU, canvas/audio noise to defeat bot detection) and save screenshots. It then **detects UI elements** with pixel-precise bounding boxes, crops to each one, and reads the text — full flow: **screenshot → find elements → crop & read**.
 

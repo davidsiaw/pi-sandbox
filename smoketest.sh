@@ -105,6 +105,12 @@ run 'command -v fdfind >/dev/null 2>&1 && echo FD_OK'  | grep -q FD_OK && pass "
 # pages for inspect_image. Without it, scanned PDFs are unreadable.
 run 'command -v pdftoppm >/dev/null 2>&1 && echo PDFTOPPM_OK' | grep -q PDFTOPPM_OK \
   && pass "pdftoppm on PATH (poppler-utils)" || fail "pdftoppm missing from PATH"
+# ffmpeg/ffprobe/yt-dlp back the `video` skill (frames + contact sheets an agent
+# reads instead of driving a video player in page_console).
+run 'command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 && echo FFMPEG_OK' | grep -q FFMPEG_OK \
+  && pass "ffmpeg + ffprobe on PATH" || fail "ffmpeg/ffprobe missing from PATH"
+run 'yt-dlp --version >/dev/null 2>&1 && echo YTDLP_OK' | grep -q YTDLP_OK \
+  && pass "yt-dlp on PATH and runs" || fail "yt-dlp missing or does not run"
 # Ask pi's own tools-manager where it resolves fd/rg: must be a system binary
 # (not a path under ~/.pi/agent/bin), which is what suppresses the download.
 out="$(run 'node -e '\''import("/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/utils/tools-manager.js").then(m=>{const fd=m.getToolPath("fd"),rg=m.getToolPath("rg");const bad=[fd,rg].some(p=>!p||p.includes(".pi/agent/bin"));process.stdout.write(bad?("BAD fd="+fd+" rg="+rg):"TOOLS_ON_PATH")})'\'' ')"
@@ -901,6 +907,32 @@ run 'test -s /opt/pa/skills/pa-console/SKILL.md && echo CONSOLE_SKILL_OK' | grep
 run 'n=$(grep -c page_console /opt/pa/skills/pa-console/SKILL.md 2>/dev/null || echo 0); [ "$n" -ge 5 ] && echo CONSOLE_SKILL_DOCS_OK' | grep -q CONSOLE_SKILL_DOCS_OK \
   && pass "pa-console skill documents the tools" \
   || fail "pa-console skill does not mention page_console enough to be useful"
+
+# video skill guard, offline. Builds a 6s test clip, then exercises the real
+# path end to end: yt-dlp must load its system config (node as the JS runtime,
+# which YouTube needs) and see ffmpeg; it "downloads" the clip via file://;
+# contact-sheet.sh must tile it into a sheet; vtt2txt.sh must collapse
+# rolling-caption duplicates. No network, so no YouTube -- that is the one part
+# this cannot prove, and it is what the yt-dlp freshness placement is for.
+out="$(run 'set -e; d=$(mktemp -d); cd "$d"
+ffmpeg -v error -f lavfi -i "testsrc=d=6:s=320x240:r=10" clip.mp4
+v=$(yt-dlp -v --enable-file-urls -o "dl.%(ext)s" "file://$d/clip.mp4" 2>&1)
+echo "$v" | grep -q "JS runtimes: node" && echo YT_NODE
+echo "$v" | grep -q "exe versions: ffmpeg" && echo YT_FFMPEG
+test -s dl.mp4 && echo YT_DL
+/opt/pa/skills/video/contact-sheet.sh dl.mp4 sheets 1 3 2 >/dev/null && test -s sheets/sheet_001.jpg && echo SHEET_OK
+printf "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhello <c>there</c>\n\n00:00:02.000 --> 00:00:03.000\nhello there\nnext line\n" > s.vtt
+[ "$(/opt/pa/skills/video/vtt2txt.sh s.vtt | wc -l)" = 2 ] && echo VTT_OK')"
+missing=""
+for tok in YT_NODE YT_FFMPEG YT_DL SHEET_OK VTT_OK; do
+  echo "$out" | grep -q "$tok" || missing="$missing $tok"
+done
+if [ -z "$missing" ]; then
+  pass "video pipeline (yt-dlp config + ffmpeg + contact sheet + vtt2txt)"
+else
+  fail "video pipeline broken, missing:$missing"
+  echo "$out" | tail -5 | sed 's/^/      /'
+fi
 
 # pa-anthropic-oauth guard: /resume used to kill pi with "This extension ctx is
 # stale after session replacement or reload" — the usage poller's 60s interval

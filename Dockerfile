@@ -102,6 +102,12 @@ RUN git clone --depth 1 https://github.com/AmazingAng/auth2api /opt/auth2api && 
     chmod +x /usr/local/bin/auth2api && \
     rm -rf /opt/auth2api/.git /opt/auth2api/src /opt/auth2api/tests /tmp/patch-auth2api.sh
 
+# ffmpeg / ffprobe for the `video` skill (frames and contact sheets an agent can
+# read; also what yt-dlp merges and cuts sections with). Its own layer, last of
+# the third-party installs, so it invalidates nothing above it.
+COPY scripts/install-ffmpeg.sh /tmp/install-ffmpeg.sh
+RUN bash /tmp/install-ffmpeg.sh && rm /tmp/install-ffmpeg.sh
+
 # ---------------------------------------------------------------------------
 # Everything ABOVE this line is third-party and slow to build (apt, node,
 # Chromium, mise, CloakBrowser, auth2api). Everything BELOW is this repo's own
@@ -225,6 +231,15 @@ RUN bash /tmp/install-pi.sh && rm /tmp/install-pi.sh
 ENV PA_UPDATE_COMMAND="pa update"
 COPY scripts/patch-update-command.sh /tmp/patch-update-command.sh
 RUN bash /tmp/patch-update-command.sh && rm /tmp/patch-update-command.sh /tmp/pi-patch.mjs
+
+# yt-dlp for the `video` skill. Deliberately BELOW the pi install: YouTube breaks
+# old yt-dlp releases within weeks, and pi changes on nearly every build, so
+# sitting here means each image build fetches the current yt-dlp instead of
+# reusing a cached, rotting one. ~40MB download, no other dependencies.
+# Pin (e.g. to reproduce an old image): YTDLP_VERSION=2026.08.19 sh build.sh
+ARG YTDLP_VERSION=
+COPY scripts/install-yt-dlp.sh /tmp/install-yt-dlp.sh
+RUN YTDLP_VERSION="${YTDLP_VERSION}" bash /tmp/install-yt-dlp.sh && rm /tmp/install-yt-dlp.sh
 
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

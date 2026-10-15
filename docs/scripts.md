@@ -177,6 +177,22 @@ chromium`. Browsers go to a shared, world-readable path (`chmod -R a+rX`) so
 they survive the mise data-dir volume overlay, are usable by any uid, and aren't
 re-downloaded per container.
 
+## scripts/install-ffmpeg.sh (root)
+
+`apt-get install --no-install-recommends ffmpeg` (ffmpeg + ffprobe) in its own
+layer, last of the third-party installs. Fails the build if the resulting ffmpeg
+has no `drawtext` filter, which the `video` skill's contact sheets use for
+timestamps. See [video.md](video.md).
+
+## scripts/install-yt-dlp.sh (root)
+
+Installs the official standalone yt-dlp binary for the build architecture
+(`yt-dlp_linux` / `yt-dlp_linux_aarch64`) to `/usr/local/bin/yt-dlp`, verified
+against the release's `SHA2-256SUMS`, and writes `/etc/yt-dlp.conf` with
+`--js-runtimes node:/usr/bin/node`. `YTDLP_VERSION` pins a release tag; empty
+(default) means latest. Runs **after** the pi install on purpose, so every image
+build picks up a current yt-dlp. See [video.md](video.md).
+
 ## scripts/install-extension-deps.sh (root)
 
 Runs after `COPY pa-extensions /opt/pa/extensions`. For each baked extension
