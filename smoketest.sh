@@ -985,6 +985,16 @@ run 'test -f /opt/pa/extensions/pa-pdf/node_modules/pdf-parse/lib/pdf-parse.js &
   | grep -q PDFPARSE_OWNED \
   && pass "pa-pdf owns its pdf-parse dep" || fail "pa-pdf pdf-parse dep missing"
 
+# pa-server-context guard: models.json models get the context their server reports
+# at /v1/models. Drives the real handlers against loopback servers.
+out="$(run 'cd /opt/pa/extensions/pa-server-context && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-server-context selftest (context from /v1/models)"
+else
+  fail "pa-server-context selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 # pa-token-usage guard: CSV row/header agreement, cost-0 handling (local models
 # and subscription billing report 0, which must not become Infinity), and the
 # multi-writer append race. That race is real, not hypothetical: every container
