@@ -1009,6 +1009,18 @@ else
   echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
 fi
 
+# pa-cold-warning guard: a warm prompt sees no dialog, a cold one shows the
+# restore cost with Restore/Cancel, Cancel keeps the user's text, small contexts
+# and non-Claude models are ignored, and no model request is ever made.
+# Auth-free: fake ctx.
+out="$(run 'cd /opt/pa/extensions/pa-cold-warning && node selftest.mjs 2>&1')"
+if echo "$out" | grep -q 'selftest: all checks passed'; then
+  pass "pa-cold-warning selftest (cold prompt dialog)"
+else
+  fail "pa-cold-warning selftest failed"
+  echo "$out" | grep -i 'FAIL' | sed 's/^/      /'
+fi
+
 # The data dir must NOT be baked next to the code. /opt/pa is read-only and
 # ephemeral; the CSVs have to land in the host-mounted ~/.pi/agent/extensions.
 # A token-usage/ dir baked here would mean the extension silently writes into
