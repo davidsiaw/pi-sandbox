@@ -52,11 +52,14 @@ export function formatEvents(events: ConsoleEvent[]): string {
  * Only errors matter for a quick verdict, so the receipt leads with a count.
  * `script` is excluded deliberately: it is the caller's own broken snippet, not
  * evidence about the page, and folding it into the error count would make an
- * agent think it had found a bug in the app.
+ * agent think it had found a bug in the app. `neterr` IS counted: a request
+ * that never got a response is as much a "failed request" as a 5xx, and the
+ * receipt says "error/failed-request event(s)".
  */
 export function countErrors(events: ConsoleEvent[]): number {
-	return events.filter((e) => e.kind === "uncaught" || e.kind === "error" || e.kind === "http")
-		.length;
+	return events.filter(
+		(e) => e.kind === "uncaught" || e.kind === "error" || e.kind === "http" || e.kind === "neterr",
+	).length;
 }
 
 export function cacheFileName(now: Date = new Date()): string {

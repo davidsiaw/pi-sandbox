@@ -372,6 +372,17 @@ try {
 	const guardAt = idx.indexOf("if (result.blocked && escalate)");
 	const callAt = idx.indexOf("cloakDumpDom({");
 	check("cloakDumpDom is called exactly once", idx.split("cloakDumpDom({").length - 1 === 1);
+	// REGRESSION: escalation fetched result.finalUrl. A block is often a redirect
+	// (Google's /sorry/index?continue=...), so CloakBrowser was sent to the refusal
+	// page itself instead of the page that was asked for.
+	check(
+		"escalation fetches the REQUESTED url, not the blocked page's finalUrl",
+		/cloakDumpDom\(\{\s*url: requestedUrl,/.test(idx) &&
+			/cloakFetchLive\(\s*chromium,\s*\{\s*url: requestedUrl,/.test(idx) &&
+			/const requestedUrl = url\.toString\(\);/.test(idx),
+	);
+	check("no escalation path fetches result.finalUrl", !/url: result\.finalUrl/.test(idx));
+	check("without CloakBrowser the block is not blamed on both engines", /const cloakTried = escalate && cloakAvailable\(\);/.test(idx) && /cloakTried\s*\?/.test(idx));
 	check("escalation only runs after a block (a normal fetch pays nothing)", guardAt > 0 && callAt > guardAt, `guard@${guardAt} call@${callAt}`);
 	check("successful escalation clears the blocked flag", /result\.blocked = false;/.test(idx));
 	check("successful escalation reports which engine won", /Engine: \$\{/.test(idx) && /escalated automatically/.test(idx));

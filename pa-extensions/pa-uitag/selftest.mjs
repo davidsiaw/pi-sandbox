@@ -186,6 +186,27 @@ try {
 		"every detection at 0.9 is above 0.9",
 		strict.detections.every((d) => d.confidence >= 0.9),
 	);
+
+	// --- (5) WASM images are freed ----------------------------------------
+	// PhotonImages live in WASM memory the JS GC never reclaims; preprocess used
+	// to free neither the decoded screenshot nor its resize, leaking both on every
+	// call. Count free() on the same module instance detect.ts loads.
+	{
+		const photonMod = createRequire(join(here, "detect.ts"))("@silvia-odwyer/photon-node/photon_rs.js");
+		const proto = (photonMod.default ?? photonMod).PhotonImage.prototype;
+		const origFree = proto.free;
+		let frees = 0;
+		proto.free = function (...a) {
+			frees++;
+			return origFree.apply(this, a);
+		};
+		try {
+			await detect(bytes, { modelPath });
+		} finally {
+			proto.free = origFree;
+		}
+		check("detect frees both PhotonImages it creates", frees >= 2, `free() called ${frees}x`);
+	}
 } finally {
 	rmSync(tmp, { recursive: true, force: true });
 }

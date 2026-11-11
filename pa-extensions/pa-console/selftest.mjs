@@ -132,8 +132,9 @@ const counted = countErrors([
 	{ t: 4, kind: "error", where: "", text: "" },
 	{ t: 5, kind: "script", where: "", text: "" },
 	{ t: 6, kind: "agent", where: "", text: "" },
+	{ t: 7, kind: "neterr", where: "", text: "" },
 ]);
-check("countErrors counts uncaught+http+error only", counted === 3, `got ${counted}`);
+check("countErrors counts uncaught+http+error+neterr only", counted === 4, `got ${counted}`);
 
 check("humanDuration seconds", humanDuration(45_000) === "45s", humanDuration(45_000));
 check("humanDuration minutes", humanDuration(372_000) === "6m12s", humanDuration(372_000));

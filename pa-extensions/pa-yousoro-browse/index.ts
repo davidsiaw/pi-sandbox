@@ -516,8 +516,13 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			// this and defeats what Playwright-with-patches cannot (reCAPTCHA v3,
 			// behaviour scoring). So retry here rather than hoping the model does.
 			// Only on a real block, so a normal fetch never pays for it.
+			// Escalate with the URL that was REQUESTED, not result.finalUrl: a block
+			// is often a redirect (Google's /sorry/index?continue=...), so finalUrl is
+			// the refusal page itself and fetching it again just fetches the refusal.
+			const requestedUrl = url.toString();
+			const cloakTried = escalate && cloakAvailable();
 			if (result.blocked && escalate) {
-				if (!cloakAvailable()) {
+				if (!cloakTried) {
 					result.escalationNote =
 						"CloakBrowser is not installed in this image, so there is nothing to " +
 						"escalate to.";
@@ -525,7 +530,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 					onProgress("Blocked — escalating to CloakBrowser (stealth Chromium)...");
 					try {
 						const html = await cloakDumpDom({
-							url: result.finalUrl,
+							url: requestedUrl,
 							humanize: params.humanize ?? true,
 							timeoutMs: 45000,
 						});
@@ -545,7 +550,7 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 							const live = await cloakFetchLive(
 								chromium,
 								{
-									url: result.finalUrl,
+									url: requestedUrl,
 									challengeWaitMs: params.challenge_wait_ms ?? 25000,
 								},
 								onProgress,
@@ -583,8 +588,11 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 									? html
 									: format === "text"
 										? readable
-										: htmlToMarkdown(html, result.finalUrl);
+										: htmlToMarkdown(html, requestedUrl);
 							result.html = html;
+							// The dump is of the requested URL; the blocked page's URL no
+							// longer describes what is being returned.
+							result.finalUrl = requestedUrl;
 							result.title = titleOf(html) || result.title;
 							result.blocked = false;
 							result.engine = "cloakbrowser";
@@ -711,13 +719,17 @@ export default function paYousoroBrowseExtension(pi: ExtensionAPI) {
 			// system prompt is too far away from this point to be acted on.
 			if (result.blocked) {
 				parts.push(
-					escalate
+					cloakTried
 						? "\n--- BLOCKED ---\nBoth yousoro_browse and CloakBrowser failed on this " +
 							"URL. Do not retry either one: find another source for the same " +
 							"information, or tell the user this site cannot be read from here."
-						: "\n--- BLOCKED ---\nNext step: retry this URL with the cloak_browse tool " +
-							"(stealth Chromium with C++ patches; defeats reCAPTCHA v3 and " +
-							`behavioural detection that this tool cannot). cloak_browse url="${result.finalUrl}"`,
+						: escalate
+							? "\n--- BLOCKED ---\nyousoro_browse failed on this URL and CloakBrowser is " +
+								"not installed, so nothing stronger exists here: find another source, " +
+								"or tell the user this site cannot be read from here."
+							: "\n--- BLOCKED ---\nNext step: retry this URL with the cloak_browse tool " +
+								"(stealth Chromium with C++ patches; defeats reCAPTCHA v3 and " +
+								`behavioural detection that this tool cannot). cloak_browse url="${requestedUrl}"`,
 				);
 			}
 

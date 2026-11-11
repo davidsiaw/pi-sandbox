@@ -73,11 +73,12 @@ export interface CloakFetchOptions {
 }
 
 /**
- * Fetch a page and return the serialised DOM. Flags are the ones known to work
- * headless in a container; `--humanize` is what defeats behaviour-scoring gates,
- * so it is on unless explicitly disabled.
+ * The argv for a `--dump-dom` fetch. Flags are the ones known to work headless
+ * in a container; `--humanize` is what defeats behaviour-scoring gates, so it is
+ * on unless explicitly disabled. Exported so both callers -- and the selftest --
+ * share ONE definition of that default.
  */
-export async function cloakDumpDom(opts: CloakFetchOptions): Promise<string> {
+export function cloakDumpDomArgs(opts: CloakFetchOptions): string[] {
 	const args = [
 		"--headless",
 		"--no-sandbox",
@@ -88,6 +89,12 @@ export async function cloakDumpDom(opts: CloakFetchOptions): Promise<string> {
 	];
 	if (opts.humanize !== false) args.push("--humanize");
 	if (opts.fingerprint) args.push(`--fingerprint=${opts.fingerprint}`);
+	return args;
+}
+
+/** Fetch a page and return the serialised DOM. */
+export async function cloakDumpDom(opts: CloakFetchOptions): Promise<string> {
+	const args = cloakDumpDomArgs(opts);
 
 	const { stdout, stderr, code } = await runCloak(args, opts.timeoutMs ?? 30000);
 	if (code !== 0) {

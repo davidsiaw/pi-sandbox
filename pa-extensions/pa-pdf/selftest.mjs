@@ -315,6 +315,29 @@ if (findPdftoppm()) {
 	const many = renderPages(doc, [1, 2, 3], {});
 	check("render: renders each requested page", many.rendered.length === 3);
 	check("render: nothing dropped under the cap", many.dropped.length === 0);
+
+	// REGRESSION: the cache is keyed by content but stored the FIRST path it saw
+	// as `source`, which is what pdftoppm renders from. The same PDF opened from a
+	// new path after the original was deleted then failed to render.
+	const movedA = join(SANDBOX, "moved-a.pdf");
+	const movedB = join(SANDBOX, "moved-b.pdf");
+	const cacheBefore = process.env.PA_PDF_CACHE_DIR;
+	// A fresh cache, so moved-a.pdf (not an earlier fixture copy) is the first-seen path.
+	process.env.PA_PDF_CACHE_DIR = join(SANDBOX, "cache-moved");
+	copyFileSync(join(FIXTURES, "scanned.pdf"), movedA);
+	await loadPdf(movedA);
+	copyFileSync(movedA, movedB);
+	rmSync(movedA);
+	const movedDoc = await loadPdf(movedB);
+	check("cache hit reports this call's path as the source", movedDoc.source === movedB, movedDoc.source);
+	let movedErr = "";
+	try {
+		renderPages(movedDoc, [3], { force: true });
+	} catch (err) {
+		movedErr = err.message;
+	}
+	check("render works after the first-seen copy was deleted", movedErr === "", movedErr);
+	process.env.PA_PDF_CACHE_DIR = cacheBefore;
 }
 
 // ── the tools register and behave ───────────────────────────────────────────

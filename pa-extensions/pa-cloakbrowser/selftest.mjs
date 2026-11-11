@@ -182,6 +182,17 @@ const C = await import(join(here, "..", "_shared", "cache.ts"));
 	check("detection reads the RENDERED text, never raw markup", /const readable = format === "html" \? htmlToText\(raw\) : result;/.test(src));
 	check("blocked text says cloak is the last resort, not to retry", /nothing further to/.test(src) && /different source/.test(src));
 	check("spawn logic is shared with pa-yousoro-browse", /from "\.\.\/_shared\/cloak\.ts"/.test(src));
+
+	// REGRESSION: cloak_browse built its own argv and passed --humanize only when
+	// humanize was set EXPLICITLY, while printing `Humanize: true` -- so the
+	// default fetch was never humanized. It must use the shared fetcher, whose
+	// default is on.
+	check("index.ts fetches through the shared cloakDumpDom", /await cloakDumpDom\(\{/.test(src));
+	check("index.ts builds no --dump-dom argv of its own", !src.includes('"--dump-dom"'));
+	const K = await import(join(here, "..", "_shared", "cloak.ts"));
+	check("humanize is ON by default", K.cloakDumpDomArgs({ url: "https://x.test/" }).includes("--humanize"));
+	check("humanize=true passes --humanize", K.cloakDumpDomArgs({ url: "https://x.test/", humanize: true }).includes("--humanize"));
+	check("humanize=false omits --humanize", !K.cloakDumpDomArgs({ url: "https://x.test/", humanize: false }).includes("--humanize"));
 }
 
 if (failures > 0) {

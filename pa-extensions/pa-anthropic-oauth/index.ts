@@ -48,6 +48,13 @@ async function generatePKCE(): Promise<PKCECodes> {
 
 function startCallbackServer(): Promise<{ code: string; state: string }> {
   return new Promise((resolve, reject) => {
+    // Closes the server and the 5-minute timer together, so neither outlives a
+    // finished login.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      clearTimeout(timer);
+      server.close();
+    };
     const server = http
       .createServer((req, res) => {
         const url = new URL(req.url!, `http://localhost:${CALLBACK_PORT}`);
@@ -60,18 +67,19 @@ function startCallbackServer(): Promise<{ code: string; state: string }> {
             `<html><body><h2>${error ? "Login failed" : "Login successful!"}</h2>` +
               `<p>${error ? "Error: " + error : "You can close this window."}</p></body></html>`,
           );
-          server.close();
+          finish();
           if (error) reject(new Error(`OAuth error: ${error}`));
           else if (code && state) resolve({ code, state });
           else reject(new Error("Missing code or state in callback"));
         } else {
+          // Anything else (a browser's /favicon.ico, a stray probe) is not the
+          // callback. It used to close the server and reject, aborting a login
+          // whose real callback had not arrived yet.
           res.writeHead(404).end();
-          server.close();
-          reject(new Error("Unexpected callback path"));
         }
       })
       .listen(CALLBACK_PORT, "127.0.0.1");
-    setTimeout(() => {
+    timer = setTimeout(() => {
       server.close();
       reject(new Error("OAuth callback timed out (5 min)"));
     }, 5 * 60 * 1000);

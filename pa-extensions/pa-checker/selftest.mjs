@@ -86,6 +86,8 @@ const BIN = join(TMP, "bin");
 mkdirSync(BIN, { recursive: true });
 const ARGV_FILE = join(TMP, "argv.txt");
 const RESPONSE_FILE = join(TMP, "response.jsonl");
+// The audit payload arrives on STDIN (a >128 KiB argv string is E2BIG on Linux).
+const STDIN_FILE = join(TMP, "stdin.txt");
 // Arguments are separated by \034, not newline: the payload argument is itself
 // multi-line, and splitting on newline would silently truncate every assertion
 // about it to its last line (which is exactly what happened first time round).
@@ -94,6 +96,7 @@ writeFileSync(
   `#!/bin/sh
 printf '%s\\034' "$@" > "${ARGV_FILE}"
 [ -n "$PA_TEST_FAIL" ] && exit 1
+cat > "${STDIN_FILE}"
 cat "${RESPONSE_FILE}"
 `,
 );
@@ -103,6 +106,7 @@ process.env.PATH = `${BIN}:${process.env.PATH}`;
 /** Make the fake checker answer with `text` as its final assistant message. */
 function respondWith(text) {
   rmSync(ARGV_FILE, { force: true });
+  rmSync(STDIN_FILE, { force: true });
   writeFileSync(
     RESPONSE_FILE,
     `${JSON.stringify({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "x" }] } })}
@@ -119,6 +123,8 @@ const argvOf = () => {
   parts.pop(); // trailing separator
   return parts;
 };
+/** What the checker received on stdin, i.e. the audit payload. "" if none. */
+const payloadOf = () => (existsSync(STDIN_FILE) ? readFileSync(STDIN_FILE, "utf8") : "");
 
 // --- fake agent dir with models.json ---------------------------------------
 
@@ -318,12 +324,44 @@ const load = () => {
   check("spawned with the configured checker model", argv.includes("someprov/auditor"), joined);
   check("child extension is loaded explicitly", argv.some((a) => a.endsWith("child.ts")), joined);
 
-  const payload = argv[argv.length - 1];
+  const payload = payloadOf();
   check("payload carries the system prompt", payload.includes("SYSTEM_PROMPT_SENTINEL"));
   check("payload carries the user request", payload.includes("add retry logic and run the tests"));
   check("payload carries the final answer", payload.includes("all tests pass"));
   check("payload carries the tool log", payload.includes("grep") && payload.includes("no matches"), payload.slice(0, 400));
   check("payload does not claim tools were called when none were", !payload.includes("no tools were called"));
+  check("payload is not passed as an argument", !argv.some((a) => a.includes("SYSTEM_PROMPT_SENTINEL")));
+}
+
+// --- REGRESSION: a payload over 128 KiB must still reach the checker ---------
+//
+// Linux caps ONE argv string at MAX_ARG_STRLEN (128 KiB). The payload used to be
+// the last argument, so a big system prompt plus tool log made spawn fail with
+// E2BIG and the audit silently failed open. It now goes over stdin.
+{
+  respondWith('{"verdict":"pass"}');
+  const inst = load();
+  const ctx = makeCtx();
+  ctx.getSystemPrompt = () => `BIG_PROMPT_HEAD ${"p".repeat(200_000)} BIG_PROMPT_TAIL`;
+  await inst.emit("agent_settled", {}, ctx);
+  const argv = argvOf() ?? [];
+  const payload = payloadOf();
+  check("a >128 KiB payload still spawns the checker", argv.length > 0, ctx.notes.join("|"));
+  check("no single argument exceeds MAX_ARG_STRLEN", argv.every((a) => Buffer.byteLength(a) < 128 * 1024));
+  check("the big payload arrives whole on stdin", payload.includes("BIG_PROMPT_HEAD") && payload.includes("BIG_PROMPT_TAIL"));
+  check("the audit completed (verdict parsed)", ctx.notes.some((n) => n.includes("looks good")), ctx.notes.join("|"));
+}
+
+// --- the overall cap is a BYTE cap, multi-byte text included ---
+{
+  respondWith('{"verdict":"pass"}');
+  const inst = load();
+  const ctx = makeCtx();
+  ctx.getSystemPrompt = () => "沙".repeat(200_000); // 3 bytes each: 600 KB
+  await inst.emit("agent_settled", {}, ctx);
+  const payload = payloadOf();
+  check("multi-byte payload is truncated to the byte cap", payload.length > 0 && Buffer.byteLength(payload) <= 256 * 1024, String(Buffer.byteLength(payload)));
+  check("truncated payload says so", payload.includes("[Payload truncated."));
 }
 
 // --- REGRESSION: the "oh wow weird" false positive ---
@@ -358,7 +396,7 @@ const load = () => {
     msg("a3", "u2", { role: "assistant", content: [{ type: "text", text: "Yeah — cocoa butter has six polymorphs too." }], stopReason: "stop" }),
   ];
   await inst.emit("agent_settled", {}, makeCtx(conversation));
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
 
   check("payload carries the earlier exchange", payload.includes("RITONAVIR_ANSWER"), payload.slice(0, 300));
   check("payload shows the earlier question", payload.includes("tell me about the ritonavir disaster"));
@@ -383,7 +421,7 @@ const load = () => {
   long.push(msg("uL", null, { role: "user", content: "last question" }));
   long.push(msg("aL", "uL", { role: "assistant", content: [{ type: "text", text: "last answer" }], stopReason: "stop" }));
   await inst.emit("agent_settled", {}, makeCtx(long));
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
 
   check("long history keeps the most recent turns", payload.includes("MSG_59"));
   check("long history drops the oldest", !payload.includes("MSG_0 "), "MSG_0 should have been trimmed");
@@ -403,7 +441,7 @@ const load = () => {
       msg("a1", "u1", { role: "assistant", content: [{ type: "text", text: "first ever answer" }], stopReason: "stop" }),
     ]),
   );
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
   check("a first exchange is labelled as such", payload.includes("first exchange in the conversation"));
   check("a first exchange with no tools says none were used at all", payload.includes("none earlier in the conversation either"));
 }
@@ -420,7 +458,7 @@ const load = () => {
       msg("a1", "u1", { role: "assistant", content: [{ type: "text", text: "4" }], stopReason: "stop" }),
     ]),
   );
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
   check("empty tool log is stated explicitly", payload.includes("no tools were called"));
 }
 
@@ -502,7 +540,7 @@ const load = () => {
       msg("a2", "r1", { role: "assistant", content: [{ type: "text", text: "Every claim is sourced: L279, L291, L293." }], stopReason: "stop" }),
     ]),
   );
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
 
   check("a long tool result is not cut at 400 chars", payload.includes("279: The US Food and Drug Administration"), `grep output was ${grepOut.length} chars`);
   check("the cited evidence lines all survive", payload.includes("291: It has been estimated") && payload.includes("293: replacing the capsule"));
@@ -525,7 +563,7 @@ const load = () => {
       msg("a2", "r1", { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }),
     ]),
   );
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
   check("a huge tool result is still truncated", !payload.includes("z".repeat(45_000)));
   check("truncation keeps the START of the result", payload.includes("HEAD_MARKER"));
   // Search output quotes what it found LAST, so head-only truncation loses
@@ -577,7 +615,7 @@ const load = () => {
     msg("a2", "c1", { role: "assistant", content: [{ type: "text", text: "REBUTTAL: the objection is wrong because the tool calls are in the log" }], stopReason: "stop" }),
   ];
   await inst.emit("agent_settled", {}, makeCtx(afterRound1));
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
 
   check("payload contains the checker's own earlier objection", payload.includes("OBJECTION_TEXT"), payload.slice(0, 400));
   check("the objection is attributed to the audit, not to the user", payload.includes("VERIFICATION PASS"));
@@ -590,7 +628,7 @@ const load = () => {
   respondWith('{"verdict":"pass"}');
   const inst = load();
   await inst.emit("agent_settled", {}, makeCtx());
-  const payload = (argvOf() ?? []).pop() ?? "";
+  const payload = payloadOf();
   check("a clean turn has no what_happened_since_then section", !payload.includes("what_happened_since_then"));
 }
 

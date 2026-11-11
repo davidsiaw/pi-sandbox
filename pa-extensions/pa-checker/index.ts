@@ -77,10 +77,14 @@ const DEFAULT_MAX_ROUNDS = 2;
 const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**
- * Cap on the inlined payload. ARG_MAX is ~2MB on Linux, so this is not close to
- * the real limit; it is a guard against a pathological tool log making the audit
- * cost more than the work. Anything trimmed is still reachable through the
+ * Cap on the inlined payload: a guard against a pathological tool log making the
+ * audit cost more than the work. Anything trimmed is still reachable through the
  * session_context tool, which is the whole point of giving the checker one.
+ *
+ * The payload goes to the child on STDIN, not argv. Linux caps a SINGLE argv
+ * string at MAX_ARG_STRLEN = 128 KiB (not the ~2MB ARG_MAX), so passing it as an
+ * argument failed with `spawn E2BIG` -- quietly failing open -- whenever a big
+ * system prompt plus tool log crossed 128 KiB, well under this cap.
  */
 const MAX_PAYLOAD_BYTES = 256 * 1024;
 const MAX_TOOL_ARG_CHARS = 600;
@@ -472,9 +476,13 @@ ${a.answer}
 ${a.stopReason && a.stopReason !== "stop" ? `Note: the agent's final message ended with stopReason "${a.stopReason}".\n\n` : ""}Return your verdict as a single JSON object.`;
 
   if (Buffer.byteLength(payload, "utf-8") <= MAX_PAYLOAD_BYTES) return payload;
-  return `${payload.slice(0, MAX_PAYLOAD_BYTES)}
-
-[Payload truncated. Use the session_context tool to read the full conversation.]`;
+  // Cut in BYTES, leaving room for the note, so the result really is within the
+  // cap; a character slice overshoots on multi-byte text. A code point split at
+  // the cut decodes to a 3-byte U+FFFD, which would overshoot again, so drop it.
+  const note = "\n\n[Payload truncated. Use the session_context tool to read the full conversation.]";
+  const room = MAX_PAYLOAD_BYTES - Buffer.byteLength(note, "utf-8");
+  const head = Buffer.from(payload, "utf-8").subarray(0, room).toString("utf-8").replace(/\uFFFD+$/, "");
+  return `${head}${note}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -518,7 +526,9 @@ async function runChecker(
     READ_ONLY_TOOLS.join(","),
     "-xt",
     FORBIDDEN_TOOLS.join(","),
-    payload,
+    // The payload itself arrives on stdin, which pi prepends to this prompt.
+    // See MAX_PAYLOAD_BYTES for why it cannot be an argument.
+    "Audit the answer above. Reply with the single JSON verdict object.",
   ];
 
   const { command, args: argv } = piInvocation(args);
@@ -536,7 +546,7 @@ async function runChecker(
     const proc = spawn(command, argv, {
       cwd: ctx.cwd,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
         PA_CHECKER_CHILD: "1", // stops this extension recursing if ever discovered
@@ -549,6 +559,11 @@ async function runChecker(
       proc.kill("SIGKILL");
       done({ error: `checker timed out after ${Math.round(cfg.timeoutMs / 1000)}s` });
     }, cfg.timeoutMs);
+
+    // A child that dies before reading stdin makes this write EPIPE; that is
+    // reported through `close`, so the stream error itself is not interesting.
+    proc.stdin.on("error", () => {});
+    proc.stdin.end(payload);
 
     let buffer = "";
     let last = "";

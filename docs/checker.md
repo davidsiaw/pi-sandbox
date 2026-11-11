@@ -300,6 +300,11 @@ One extra model call per response, on the audited model only. On a short answer
 this roughly doubles latency, and the payload is large by design — the whole
 system prompt and tool log go in. Point `checker` at a small local model.
 
+The payload is capped at 256 KB and is written to the checker's **stdin**, not
+passed as an argument: Linux limits a single argv string to 128 KiB
+(`MAX_ARG_STRLEN`), and an argument-sized payload past that failed to spawn with
+`E2BIG`, which the fail-open path reported only as a one-line warning.
+
 Remember the checker is a second opinion from a model that saw *less* context
 than the first one. It will sometimes be confidently wrong, which is why the
 round budget exists and why its objections are always shown to you rather than

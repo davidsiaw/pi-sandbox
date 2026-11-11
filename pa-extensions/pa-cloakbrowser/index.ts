@@ -46,7 +46,7 @@ import {
   truncateHead,
   writeCache,
 } from "../_shared/cache.ts";
-import { cloakFetchLive, CLOAKBROWSER_BINARY, cloakAvailable, runCloak, titleOf } from "../_shared/cloak.ts";
+import { cloakDumpDom, cloakFetchLive, CLOAKBROWSER_BINARY, cloakAvailable, runCloak, titleOf } from "../_shared/cloak.ts";
 import { htmlToMarkdown, htmlToText } from "../_shared/html-to-markdown.ts";
 import { loadChromium, looksBlocked, looksChallenge } from "../_shared/stealth.ts";
 
@@ -114,37 +114,27 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
     parameters: BrowseParams,
     async execute(_toolCallId, params, _signal, onUpdate) {
       const timeout = params.timeout_ms ?? 30000;
+      const humanize = params.humanize ?? true;
 
-      // Build args: Known working flags for Docker/containers
-      const args: string[] = [
-        "--headless",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--dump-dom", // Output full HTML to stdout
-        params.url,
-      ];
-
-      if (params.humanize) {
-        args.push("--humanize");
-      }
-
-      if (params.fingerprint) {
-        args.push(`--fingerprint=${params.fingerprint}`);
-      }
-
-      // Note: We don't use --format here because the binary outputs HTML via --dump-dom
-      // If markdown is requested, we'll strip tags in the result.
-
-      const { stdout, stderr, code } = await runCloak(args, timeout);
-
-      if (code !== 0) {
+      // The shared fetcher, so the container flags AND the humanize default
+      // cannot drift from yousoro_browse's escalation path. A hand-rolled copy
+      // here used to pass --humanize only when it was set explicitly, while
+      // reporting `Humanize: true` -- so the default fetch was never humanized.
+      let stdout: string;
+      try {
+        stdout = await cloakDumpDom({
+          url: params.url,
+          humanize,
+          fingerprint: params.fingerprint,
+          timeoutMs: timeout,
+        });
+      } catch (err) {
         // Error output is small and is the whole diagnosis, so it stays inline.
         return {
           content: [
             {
               type: "text",
-              text: `CloakBrowser failed (exit ${code}):\n${(stderr || stdout).slice(0, 4000)}`,
+              text: `CloakBrowser failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -152,7 +142,7 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
       }
 
       const format = params.format ?? "markdown";
-      let raw = stdout.trim();
+      let raw = stdout;
       const render = (html: string) =>
         format === "markdown"
           ? htmlToMarkdown(html, params.url)
@@ -231,7 +221,7 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
       const heading =
         format === "markdown" ? "Page markdown" : format === "text" ? "Page text" : "Page HTML";
       const parts: string[] = [
-        `URL: ${params.url}\nFormat: ${format}  Humanize: ${params.humanize ?? true}  Mode: ${
+        `URL: ${params.url}\nFormat: ${format}  Humanize: ${humanize}  Mode: ${
           live ? "live (DOM dump hit a challenge; cleared by waiting + Turnstile click)" : "dump-dom"
         }`,
       ];
@@ -267,7 +257,7 @@ export default function paCloakbrowserExtension(pi: ExtensionAPI) {
         details: {
           url: params.url,
           format,
-          humanize: params.humanize ?? true,
+          humanize,
           cachePath: cache?.path,
           rawPath: cache?.rawPath,
           cacheLines: cache?.totalLines,

@@ -147,31 +147,38 @@ interface Letterboxed {
  */
 function preprocess(photon: Any, imageBytes: Buffer): Letterboxed {
 	const img = photon.PhotonImage.new_from_byteslice(new Uint8Array(imageBytes));
-	const origWidth: number = img.get_width();
-	const origHeight: number = img.get_height();
-	const scale = Math.min(INPUT_SIZE / origWidth, INPUT_SIZE / origHeight);
-	const newWidth = Math.round(origWidth * scale);
-	const newHeight = Math.round(origHeight * scale);
-	const padX = Math.floor((INPUT_SIZE - newWidth) / 2);
-	const padY = Math.floor((INPUT_SIZE - newHeight) / 2);
+	// Both PhotonImages live in WASM memory, which the JS GC does not reclaim:
+	// without free() every call leaked a decoded screenshot (and its resize).
+	let resized: Any;
+	try {
+		const origWidth: number = img.get_width();
+		const origHeight: number = img.get_height();
+		const scale = Math.min(INPUT_SIZE / origWidth, INPUT_SIZE / origHeight);
+		const newWidth = Math.round(origWidth * scale);
+		const newHeight = Math.round(origHeight * scale);
+		const padX = Math.floor((INPUT_SIZE - newWidth) / 2);
+		const padY = Math.floor((INPUT_SIZE - newHeight) / 2);
 
-	const rgba: Uint8Array = photon
-		.resize(img, newWidth, newHeight, RESIZE_LANCZOS3)
-		.get_raw_pixels();
+		resized = photon.resize(img, newWidth, newHeight, RESIZE_LANCZOS3);
+		const rgba: Uint8Array = resized.get_raw_pixels();
 
-	const plane = INPUT_SIZE * INPUT_SIZE;
-	const tensor = new Float32Array(3 * plane).fill(PAD_VALUE);
-	for (let y = 0; y < newHeight; y++) {
-		for (let x = 0; x < newWidth; x++) {
-			const s = (y * newWidth + x) * 4;
-			const d = (y + padY) * INPUT_SIZE + (x + padX);
-			// RGB order (verified against the Python reference on a real screenshot).
-			tensor[d] = rgba[s] / 255;
-			tensor[plane + d] = rgba[s + 1] / 255;
-			tensor[2 * plane + d] = rgba[s + 2] / 255;
+		const plane = INPUT_SIZE * INPUT_SIZE;
+		const tensor = new Float32Array(3 * plane).fill(PAD_VALUE);
+		for (let y = 0; y < newHeight; y++) {
+			for (let x = 0; x < newWidth; x++) {
+				const s = (y * newWidth + x) * 4;
+				const d = (y + padY) * INPUT_SIZE + (x + padX);
+				// RGB order (verified against the Python reference on a real screenshot).
+				tensor[d] = rgba[s] / 255;
+				tensor[plane + d] = rgba[s + 1] / 255;
+				tensor[2 * plane + d] = rgba[s + 2] / 255;
+			}
 		}
+		return { tensor, scale, padX, padY, origWidth, origHeight };
+	} finally {
+		resized?.free();
+		img.free();
 	}
-	return { tensor, scale, padX, padY, origWidth, origHeight };
 }
 
 interface RawBox {

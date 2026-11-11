@@ -51,6 +51,14 @@
   開一活頁，反覆送 JS 而讀其 console（汝之 log 與頁之誤、5xx 同流而序）。**勿另書臨時 Playwright 之本。**
   頁於呼之間常開，故遲發之誤（setTimeout、async）落於後呼——無參一呼即取，未取勿言其已治。
   事畢以 `page_close` 釋之（閒置約 350MB）。（其詳見 pa-console 技。）
+- **Heighliner 之則**：工有 `Kaiserfile`／`Steerfile`／`Heighliner.config` 者，其棧（紅寶、gem、DB、Redis）
+  唯行於 heighliner 之器中，**勿裝於匣、勿於匣中行之**。先讀 `heighliner` 技。
+  以 `heighliner -av up` 起之，**唯一次**，置於背景而觀其 log（此乃背景之正例）；
+  再 `up` 則殺前者之 app，前者遂停其 Redis 等服，後者乃報 `Connection refused`。
+  初 `up` 而敗者，多需用戶之憑（私 gem、registry、1Password）：勿繞之，請用戶於主機行 `heighliner up -av` 一次，
+  既成則用其 session，勿再自 `up`。
+  既起，以 `heighliner login …` 行 `rspec`、`rubocop` 以驗其境；`heighliner root` 唯不得已乃用。
+  `heighliner` 不在 PATH 者，乃 spice 未起：告用戶於主機行 `sp up` 而重啟 pa，勿自尋 docker。
 - 欲知今夕何夕，速行 `date` 一觀，勿臆。
 
 ## 匣之文書 · pa

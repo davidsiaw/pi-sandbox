@@ -204,7 +204,11 @@ export async function loadPdf(absPath: string, opts: { force?: boolean } = {}): 
 	if (!opts.force && existsSync(metaPath) && existsSync(textPath)) {
 		try {
 			const meta = JSON.parse(readFileSync(metaPath, "utf8")) as PdfDoc & { cacheVersion?: number };
-			if (meta.cacheVersion === CACHE_VERSION) return meta;
+			// The cache is keyed by CONTENT, so the same bytes may now live at a
+			// different path than the one first extracted -- and the original may be
+			// gone. `source` is what pdftoppm renders from, so it must be this call's
+			// path, never the one recorded in the sidecar.
+			if (meta.cacheVersion === CACHE_VERSION) return { ...meta, source: absPath };
 		} catch {
 			// Corrupt sidecar: fall through and re-extract.
 		}

@@ -163,6 +163,61 @@ check(
   `got ${resizeLeak}`
 );
 
+// --- REGRESSION: auto-capture login survives a non-callback request ----------
+// A browser hitting http://localhost:54545/favicon.ico (or any stray request)
+// before the real /callback used to close the server and reject, aborting the
+// login. Drives the real oauth.login with fetch stubbed, no network.
+{
+  const { mkdtempSync, rmSync, existsSync, readdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const home = mkdtempSync(`${tmpdir()}/pa-oauth-selftest-`);
+  const realHome = process.env.HOME;
+  const realFetch = globalThis.fetch;
+  process.env.HOME = home; // AUTH_DIR is derived from HOME at import time
+  let loginErr = "";
+  let creds;
+  try {
+    const jiti = createJiti(`file://${HERE}/`, { interopDefault: true, alias, fsCache: false, moduleCache: false });
+    const mod = await jiti.import(`${HERE}/index.ts`);
+    let provider;
+    const inst = fakePi();
+    inst.pi.registerProvider = (_name, cfg) => { provider = cfg; };
+    (mod.default ?? mod)(inst.pi);
+
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes("/v1/oauth/token")) {
+        return new Response(JSON.stringify({
+          access_token: "acc-T", refresh_token: "ref-T", expires_in: 3600,
+          account: { email_address: "t@example.com", uuid: "u" },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return realFetch(url, init);
+    };
+
+    creds = await provider.oauth.login({
+      onSelect: async () => "browser",
+      onPrompt: async () => "",
+      onAuth: ({ url }) => {
+        const state = new URL(url).searchParams.get("state");
+        // Stray request first, then the real callback.
+        setTimeout(async () => {
+          await realFetch("http://127.0.0.1:54545/favicon.ico").catch(() => {});
+          await realFetch(`http://127.0.0.1:54545/callback?code=C&state=${encodeURIComponent(state)}`).catch(() => {});
+        }, 50);
+      },
+    });
+  } catch (e) {
+    loginErr = String(e?.message ?? e);
+  } finally {
+    globalThis.fetch = realFetch;
+    process.env.HOME = realHome;
+  }
+  check("auto-capture login ignores a stray non-callback request", loginErr === "" && creds?.access === "acc-T", loginErr);
+  const dir = `${home}/.pi/agent/auth2api`;
+  check("login wrote the token file", existsSync(dir) && readdirSync(dir).some((f) => f.startsWith("claude-")));
+  rmSync(home, { recursive: true, force: true });
+}
+
 console.log(
   failed === 0 ? "\nselftest: all checks passed" : `\nselftest: ${failed} check(s) FAILED`
 );
